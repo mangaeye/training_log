@@ -62,21 +62,19 @@ def category_for_sport(sport: str) -> str:
     return "other"
 
 
-def init_garmin(account_name: str) -> Garmin:
+def init_garmin(account_name: str) -> Garmin | None:
     account_key = account_name.upper()
     default_tokenstore = "~/.garminconnect" if account_name == "manga" else f"~/.garminconnect/{account_name}"
     tokenstore = os.getenv(f"GARMINTOKENS_{account_key}", default_tokenstore)
-    tokenstore_path = str(Path(tokenstore).expanduser())
+    tokenstore_path = Path(tokenstore).expanduser()
 
-    if not Path(tokenstore_path).exists():
-        raise RuntimeError(
-            f"No Garmin token directory found for {account_name}: {tokenstore_path}. "
-            f"Create a token locally and set GARMINTOKENS_{account_key}."
-        )
+    if not (tokenstore_path / "garmin_tokens.json").is_file():
+        print(f"No Garmin token file found for {account_name}; skipping Garmin sync for this account.")
+        return None
 
     try:
         garmin = Garmin()
-        garmin.login(tokenstore_path)
+        garmin.login(str(tokenstore_path))
         print("Logged in using saved Garmin tokens.")
         return garmin
     except (GarminConnectAuthenticationError, GarminConnectConnectionError) as exc:
@@ -289,6 +287,8 @@ def upsert_daily_sport_total(
 
 def sync_account(account_name: str, start_date: date, end_date: date):
     garmin = init_garmin(account_name)
+    if garmin is None:
+        return
     profile = garmin.get_user_profile()
     conn = get_connection()
     activity_count = 0

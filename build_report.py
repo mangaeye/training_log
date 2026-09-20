@@ -149,7 +149,8 @@ def activity_markup(activities):
         duration = format_duration(activity.get("duration_seconds", 0))
         sport = str(activity.get("sport", "")).lower()
         activity_class = "activity activity-strength" if sport in {"strength", "strength_training"} else "activity activity-running"
-        items.append(f"<span class=\"{activity_class}\"><strong>{name}</strong><small>{distance} km · {duration}</small></span>")
+        details = "" if sport in {"strength", "strength_training"} else f"<small>{distance} km · {duration}</small>"
+        items.append(f"<span class=\"{activity_class}\"><strong>{name}</strong>{details}</span>")
     return "".join(items)
 
 
@@ -180,8 +181,12 @@ def week_calendar(rows, start_date, end_date):
         )
     week_total = (
         f"<strong>{running_activity_count} runs · {strength_activity_count} strength</strong>"
-        f"<small>{format_distance(totals['run_distance'])} km</small>"
-        f"<small>{format_duration(totals['run_time'])}</small>"
+        f"<small>Run distance: {format_distance(totals['run_distance'])} km</small>"
+        f"<small>Run time: {format_duration(totals['run_time'])}</small>"
+        f"<small>Total distance: {format_distance(totals['total_distance'])} km</small>"
+        f"<small>Sedentary: {format_duration(totals['sedentary'])}</small>"
+        f"<small>Avg run distance/day: {format_distance(totals['average_run_distance'])} km</small>"
+        f"<small>Avg run time/day: {format_duration(totals['average_run_time'])}</small>"
     )
     return (
         f"<div class=\"calendar-grid\">{''.join(day_cards)}"
@@ -195,24 +200,18 @@ def _render_single_user(rows, account_name):
     last_week_monday = current_monday - timedelta(days=7)
     summary_cards = []
     for label, (start_date, end_date) in period_ranges(today).items():
-        totals = period_totals(rows, start_date, end_date)
-        average_lines = ""
         if label in {"Current week", "Last week"}:
-            average_lines = (
-                f"<div><dt>Avg run distance/day</dt><dd>{format_distance(totals['average_run_distance'])} km</dd></div>"
-                f"<div><dt>Avg run time/day</dt><dd>{format_duration(totals['average_run_time'])}</dd></div>"
-            )
+            continue
+        totals = period_totals(rows, start_date, end_date)
         summary_cards.append(
             "<article class=\"summary-card\">"
             f"<h3>{html.escape(label)}</h3>"
             f"<p class=\"summary-period\">{format_date(start_date)}"
             f"{f' to {format_date(end_date)}' if start_date != end_date else ''}</p>"
             "<dl>"
-            f"<div><dt>Run distance</dt><dd>{format_distance(totals['run_distance'])} km</dd></div>"
-            f"<div><dt>Run time</dt><dd>{format_duration(totals['run_time'])}</dd></div>"
             f"<div><dt>Total distance</dt><dd>{format_distance(totals['total_distance'])} km</dd></div>"
             f"<div><dt>Avg sedentary/day</dt><dd>{format_duration(totals['average_sedentary'])}</dd></div>"
-            f"{average_lines}</dl></article>"
+            "</dl></article>"
         )
 
     grouped = OrderedDict()
