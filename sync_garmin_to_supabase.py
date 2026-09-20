@@ -4,7 +4,6 @@ import logging
 import os
 import sys
 from datetime import date, timedelta
-from getpass import getpass
 from pathlib import Path
 from typing import Any
 
@@ -69,28 +68,22 @@ def init_garmin(account_name: str) -> Garmin:
     tokenstore = os.getenv(f"GARMINTOKENS_{account_key}", default_tokenstore)
     tokenstore_path = str(Path(tokenstore).expanduser())
 
+    if not Path(tokenstore_path).exists():
+        raise RuntimeError(
+            f"No Garmin token directory found for {account_name}: {tokenstore_path}. "
+            f"Create a token locally and set GARMINTOKENS_{account_key}."
+        )
+
     try:
         garmin = Garmin()
         garmin.login(tokenstore_path)
         print("Logged in using saved Garmin tokens.")
         return garmin
-    except (GarminConnectAuthenticationError, GarminConnectConnectionError):
-        pass
-
-    email = os.getenv(f"GARMIN_{account_key}_EMAIL") or input(
-        f"Garmin {account_name} email: "
-    ).strip()
-    password = os.getenv(f"GARMIN_{account_key}_PASSWORD") or getpass(
-        f"Garmin {account_name} password: "
-    )
-    garmin = Garmin(
-        email=email,
-        password=password,
-        prompt_mfa=lambda: input("Garmin MFA code: ").strip(),
-    )
-    garmin.login(tokenstore_path)
-    print(f"Garmin login successful. Tokens saved to: {tokenstore_path}")
-    return garmin
+    except (GarminConnectAuthenticationError, GarminConnectConnectionError) as exc:
+        raise RuntimeError(
+            f"Saved Garmin token login failed for {account_name}; "
+            "password login is disabled. Refresh the token locally."
+        ) from exc
 
 
 def get_connection():

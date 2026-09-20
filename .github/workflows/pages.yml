@@ -28,13 +28,22 @@ jobs:
       - name: Install sync dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Restore Garmin token files
+        env:
+          GARMINTOKENS_MANGA_B64: ${{ secrets.GARMINTOKENS_MANGA_B64 }}
+          GARMINTOKENS_CHIPS_B64: ${{ secrets.GARMINTOKENS_CHIPS_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$GARMINTOKENS_MANGA_B64" || { echo "Missing GARMINTOKENS_MANGA_B64"; exit 1; }
+          test -n "$GARMINTOKENS_CHIPS_B64" || { echo "Missing GARMINTOKENS_CHIPS_B64"; exit 1; }
+          mkdir -p "$HOME/.garminconnect" "$HOME/.garminconnect/chips"
+          printf '%s' "$GARMINTOKENS_MANGA_B64" | base64 --decode > "$HOME/.garminconnect/garmin_tokens.json"
+          printf '%s' "$GARMINTOKENS_CHIPS_B64" | base64 --decode > "$HOME/.garminconnect/chips/garmin_tokens.json"
+          chmod 600 "$HOME/.garminconnect/garmin_tokens.json" "$HOME/.garminconnect/chips/garmin_tokens.json"
+
       - name: Sync Garmin data
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          GARMIN_MANGA_EMAIL: ${{ secrets.GARMIN_MANGA_EMAIL }}
-          GARMIN_MANGA_PASSWORD: ${{ secrets.GARMIN_MANGA_PASSWORD }}
-          GARMIN_CHIPS_EMAIL: ${{ secrets.GARMIN_CHIPS_EMAIL }}
-          GARMIN_CHIPS_PASSWORD: ${{ secrets.GARMIN_CHIPS_PASSWORD }}
         run: python sync_garmin_to_supabase.py
         
       - name: Build report from Supabase
