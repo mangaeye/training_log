@@ -326,11 +326,22 @@ def main():
     parser = argparse.ArgumentParser(description="Sync Garmin Connect data to Supabase.")
     parser.add_argument("--start-date", type=date.fromisoformat)
     parser.add_argument("--end-date", type=date.fromisoformat)
-    parser.add_argument("--days", type=int, default=7)
+    parser.add_argument(
+        "--days",
+        type=int,
+        help="Sync this many days ending on --end-date; overrides the default start date.",
+    )
     args = parser.parse_args()
 
     end_date = args.end_date or date.today()
-    start_date = args.start_date or (end_date - timedelta(days=args.days - 1))
+    if args.start_date and args.days is not None:
+        parser.error("use either --start-date or --days, not both")
+    if args.days is not None:
+        if args.days < 1:
+            parser.error("--days must be at least 1")
+        start_date = end_date - timedelta(days=args.days - 1)
+    else:
+        start_date = args.start_date or date(2026, 9, 1)
     if start_date > end_date:
         parser.error("--start-date must be on or before --end-date")
 
