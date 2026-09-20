@@ -2,6 +2,7 @@ import html
 import json
 import math
 import os
+import shutil
 from collections import OrderedDict
 from datetime import date, timedelta
 from pathlib import Path
@@ -12,7 +13,13 @@ import psycopg2
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "site" / "index.html"
 ROUTE_KML = ROOT / "route.kml"
+KB_ICON = ROOT / "kb_icon.jpg"
 ACCOUNT_NAMES = ("manga", "chips")
+TRAIL_DAYS = 28
+TRAIL_EPOCH = date(2026, 9, 15)
+RUN_CADENCE_DAYS = 2
+STRENGTH_CADENCE_DAYS = 4
+HEALING_SESSION_COUNT = 2
 
 
 def load_env_file():
@@ -261,6 +268,139 @@ def period_totals(rows, start_date, end_date):
     }
 
 
+def weekly_run_goal_markup(rows, today):
+    week_start = today - timedelta(days=today.weekday())
+    runs_completed = sum(
+        int(row[3] or 0)
+        for row in rows
+        if week_start <= row[0] <= today
+    )
+    goal = 4
+    progress = min(runs_completed / goal, 1)
+    remaining = max(goal - runs_completed, 0)
+    message = (
+        "Goal complete - strong week!"
+        if runs_completed >= goal
+        else f"{remaining} more run{'s' if remaining != 1 else ''} to reach your goal"
+    )
+    return (
+        '<article class="summary-card goal-card">'
+        "<h3>Weekly run goal</h3>"
+        f"<p class=\"goal-count\"><strong>{runs_completed}</strong> / {goal} runs</p>"
+        f"<div class=\"goal-track\" role=\"progressbar\" aria-label=\"Weekly run goal\" "
+        f"aria-valuenow=\"{min(runs_completed, goal)}\" aria-valuemin=\"0\" aria-valuemax=\"{goal}\">"
+        f"<span style=\"width: {progress:.0%}\"></span></div>"
+        f"<p class=\"goal-message\">{message}</p>"
+        "</article>"
+    )
+
+
+def weekly_strength_goal_markup(rows, today):
+    week_start = today - timedelta(days=today.weekday())
+    strength_completed = sum(
+        sum(
+            1 for activity in row[6]
+            if str(activity.get("sport", "")).lower()
+            in {"strength", "strength_training"}
+        )
+        for row in rows
+        if week_start <= row[0] <= today
+    )
+    goal = 2
+    progress = min(strength_completed / goal, 1)
+    remaining = max(goal - strength_completed, 0)
+    message = (
+        "Goal complete - strength built!"
+        if strength_completed >= goal
+        else f"{remaining} more strength session{'s' if remaining != 1 else ''} to reach your goal"
+    )
+    return (
+        '<article class="summary-card goal-card strength-goal-card">'
+        "<h3>Weekly strength goal</h3>"
+        f"<p class=\"goal-count\"><strong>{strength_completed}</strong> / {goal} sessions</p>"
+        f"<div class=\"goal-track\" role=\"progressbar\" aria-label=\"Weekly strength goal\" "
+        f"aria-valuenow=\"{min(strength_completed, goal)}\" aria-valuemin=\"0\" aria-valuemax=\"{goal}\">"
+        f"<span style=\"width: {progress:.0%}\"></span></div>"
+        f"<p class=\"goal-message\">{message}</p>"
+        "</article>"
+    )
+
+
+def adaptive_trail_markup(rows, today):
+    start_date = today - timedelta(days=TRAIL_DAYS - 1)
+    row_by_date = {row[0]: row for row in rows}
+    days = [start_date + timedelta(days=index) for index in range(TRAIL_DAYS)]
+    sessions_by_day = {}
+    for day in days:
+        row = row_by_date.get(day)
+        activities = row[6] if row else []
+        run_count = int(row[3] or 0) if row else 0
+        strength_count = sum(
+            1 for activity in activities
+            if str(activity.get("sport", "")).lower()
+            in {"strength", "strength_training"}
+        )
+        sessions_by_day[day] = run_count + strength_count
+
+    squares = []
+    warning_count = 0
+    healed_count = 0
+    for day in days:
+        row = row_by_date.get(day)
+        activities = row[6] if row else []
+        run_count = int(row[3] or 0) if row else 0
+        strength_count = sum(
+            1 for activity in activities
+            if str(activity.get("sport", "")).lower()
+            in {"strength", "strength_training"}
+        )
+        day_index = (day - TRAIL_EPOCH).days
+        scheduled = (
+            day_index >= 0
+            and (day_index % RUN_CADENCE_DAYS == 0 or day_index % STRENGTH_CADENCE_DAYS == 0)
+        )
+        if run_count and strength_count:
+            state, label = "bloom", "Run and strength session"
+        elif run_count:
+            state, label = "run", "Run session"
+        elif strength_count:
+            state, label = "strength", "Strength session"
+        elif scheduled and day < today:
+            later_sessions = sum(sessions_by_day[later_day] for later_day in days if later_day > day)
+            if later_sessions >= HEALING_SESSION_COUNT:
+                state, label = "healed", "Restored by later sessions"
+                healed_count += 1
+            else:
+                state, label = "warning", "Waiting for a future session"
+                warning_count += 1
+        else:
+            state, label = "rest", "Recovery day"
+        squares.append(
+            f'<span class="trail-seed trail-seed-{state}" title="{html.escape(format_date(day))}: {label}" '
+            f'aria-label="{html.escape(format_date(day))}: {label}"></span>'
+        )
+
+    total_sessions = sum(sessions_by_day.values())
+    if warning_count:
+        message = "A few seeds are waiting for care. Your next sessions can restore them."
+    elif healed_count:
+        message = "Your follow-through restored earlier seeds. Momentum is growing."
+    elif total_sessions:
+        message = "Your trail is growing steadily. Keep nurturing the rhythm."
+    else:
+        message = "Every session plants a seed. Begin whenever you are ready."
+    return (
+        '<article class="summary-card trail-card">'
+        "<h3>Progress trail</h3>"
+        f"<p class=\"trail-message\">{message}</p>"
+        f'<div class="trail-grid" role="img" aria-label="Training trail for the last {TRAIL_DAYS} days">'
+        f"{''.join(squares)}</div>"
+        '<div class="trail-key"><span><i class="trail-seed trail-seed-run"></i>Run</span>'
+        '<span><i class="trail-seed trail-seed-strength"></i>Strength</span>'
+        '<span><i class="trail-seed trail-seed-warning"></i>Needs care</span>'
+        '<span><i class="trail-seed trail-seed-healed"></i>Restored</span></div>'
+        "</article>"
+    )
 def fetch_rows(connection):
     query = """
         SELECT
@@ -318,9 +458,11 @@ def activity_markup(activities):
         distance = format_distance(activity.get("distance_meters", 0))
         duration = format_run_duration(activity.get("duration_seconds", 0))
         sport = str(activity.get("sport", "")).lower()
-        activity_class = "activity activity-strength" if sport in {"strength", "strength_training"} else "activity activity-running"
+        is_strength = sport in {"strength", "strength_training"}
+        activity_class = "activity activity-strength" if is_strength else "activity activity-running"
         details = "" if sport in {"strength", "strength_training"} else f"<small>{distance} km · {duration}</small>"
-        items.append(f"<span class=\"{activity_class}\"><strong>{name}</strong>{details}</span>")
+        strength_icon = '<span class="strength-icon" aria-label="Strength activity"></span>' if is_strength else ""
+        items.append(f"<span class=\"{activity_class}\">{strength_icon}<strong>{name}</strong>{details}</span>")
     return "".join(items)
 
 
@@ -346,7 +488,7 @@ def week_calendar(rows, start_date, end_date):
             if str(activity.get("sport", "")).lower() in {"strength", "strength_training"}
         )
         day_cards.append(
-            f"<article class=\"calendar-day\"><h4>{html.escape(format_date(day))}</h4>"
+            f"<article class=\"calendar-day\"><h4>{html.escape(day.strftime('%a'))}<br>{html.escape(day.strftime('%d %b'))}</h4>"
             f"<div class=\"calendar-activities\">{activity_markup(activities)}</div></article>"
         )
     week_total = (
@@ -370,7 +512,7 @@ def _render_single_user(
     last_week_monday = current_monday - timedelta(days=7)
     summary_cards = []
     for label, (start_date, end_date) in period_ranges(today).items():
-        if label in {"Current week", "Last week"}:
+        if label in {"Yesterday", "Last 3 days", "Current week", "Last week"}:
             continue
         totals = period_totals(rows, start_date, end_date)
         summary_cards.append(
@@ -383,6 +525,9 @@ def _render_single_user(
             # f"<div><dt>Avg sedentary/day</dt><dd>{format_duration(totals['average_sedentary'])}</dd></div>"
             "</dl></article>"
         )
+    summary_cards.append(weekly_run_goal_markup(rows, today))
+    summary_cards.append(weekly_strength_goal_markup(rows, today))
+    summary_cards.append(adaptive_trail_markup(rows, today))
 
     grouped = OrderedDict()
     for row in rows:
@@ -486,6 +631,25 @@ def _render_single_user(
         .summary-card:nth-child(2) {{ border-top-color: var(--accent); }}
         .summary-card:nth-child(3) {{ border-top-color: #d28a32; }}
         .summary-card:nth-child(4) {{ border-top-color: #755d8a; }}
+        .goal-card {{ border-top-color: var(--teal) !important; }}
+        .strength-goal-card {{ border-top-color: #c8872d !important; }}
+        .goal-count {{ font-size: 1.15rem; margin: 1rem 0 0.7rem; }}
+        .goal-count strong {{ font-size: 1.8rem; }}
+        .goal-track {{ background: var(--line); height: 0.55rem; overflow: hidden; }}
+        .goal-track span {{ background: var(--teal); display: block; height: 100%; }}
+        .goal-message {{ color: var(--muted); font-size: 0.78rem; margin: 0.7rem 0 0; }}
+        .trail-card {{ border-top-color: #517d43 !important; grid-column: span 2; }}
+        .trail-message {{ color: var(--muted); font-size: 0.82rem; margin: 0.7rem 0; min-height: 2.4em; }}
+        .trail-grid {{ display: grid; gap: 0.08rem; grid-template-columns: repeat(42, minmax(0, 1fr)); }}
+        .trail-seed {{ aspect-ratio: 1; background: #d9d8cf; display: inline-block; min-height: 0.7rem; }}
+        .trail-seed-run {{ background: #517d43; }}
+        .trail-seed-strength {{ background: #c8872d; }}
+        .trail-seed-bloom {{ background: #1b6c68; box-shadow: inset 0 0 0 2px #d5ece8; }}
+        .trail-seed-warning {{ background: #ef8b47; }}
+        .trail-seed-healed {{ background: #8ab66b; box-shadow: inset 0 0 0 2px #e5f0dc; }}
+        .trail-key {{ display: flex; flex-wrap: wrap; font: 0.68rem Arial, sans-serif; gap: 0.55rem; margin-top: 0.7rem; }}
+        .trail-key span {{ align-items: center; display: inline-flex; gap: 0.25rem; }}
+        .trail-key .trail-seed {{ height: 0.65rem; min-height: 0; width: 0.65rem; }}
         .summary-period {{ color: var(--muted); font: 0.68rem Arial, sans-serif; margin: 0.35rem 0 1rem; }}
         dl {{ margin: 0; }}
         dl div {{ border-top: 1px solid var(--line); display: flex; gap: 0.5rem; justify-content: space-between; padding: 0.55rem 0; }}
@@ -531,6 +695,7 @@ def _render_single_user(
         .activity {{ background: #e3eee8; border-left: 3px solid var(--teal); display: block; margin: 0 0 0.4rem; padding: 0.35rem; }}
         .activity-strength {{ background: #f7e5c8; border-left-color: #c8872d; }}
         .activity strong {{ display: block; font-size: 0.78rem; overflow-wrap: anywhere; }}
+        .strength-icon {{ background-color: #f7e5c8; background-image: url("kb_icon.jpg"); background-position: center; background-repeat: no-repeat; background-size: contain; background-blend-mode: multiply; display: inline-block; height: 1.7rem; margin-right: 0.25rem; vertical-align: -0.45rem; width: 1.7rem; }}
         .activity small {{ color: var(--muted); display: block; font-size: 0.68rem; margin-top: 0.15rem; }}
         .calendar-total {{ align-items: center; background: var(--accent-soft); border: 1px solid var(--accent); display: flex; gap: 0.75rem; grid-column: 1 / -1; justify-content: space-between; padding: 0.8rem 1rem; }}
         .calendar-total > span {{ font: 700 0.72rem Arial, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }}
@@ -550,14 +715,21 @@ def _render_single_user(
             .summary-grid {{ grid-template-columns: 1fr; }}
             .section-heading {{ align-items: start; flex-direction: column; gap: 0.35rem; }}
             .summary-card {{ padding: 1rem; }}
+            .trail-card {{ grid-column: auto; }}
+            .trail-grid {{ gap: 0.06rem; }}
             .week-section {{ margin-left: -0.25rem; margin-right: -0.25rem; padding: 0.75rem; }}
             .long-run-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
             .long-run-grid div:nth-child(3) {{ border-left: 0; border-top: 1px solid rgba(239, 101, 70, 0.35); }}
             .long-run-grid div:nth-child(4) {{ border-top: 1px solid rgba(239, 101, 70, 0.35); }}
             .long-run-map {{ height: 15rem; min-height: 15rem; }}
-            .calendar-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-            .calendar-day {{ min-height: 7rem; padding: 0.5rem; }}
-            .calendar-day h4 {{ font-size: 0.72rem; }}
+            .calendar-grid {{ grid-template-columns: repeat(7, minmax(0, 1fr)); }}
+            .calendar-day {{ min-height: 6rem; padding: 0.3rem; }}
+            .calendar-day h4 {{ font-size: 0.58rem; margin-bottom: 0.35rem; overflow: hidden; padding-bottom: 0.3rem; text-overflow: ellipsis; white-space: nowrap; }}
+            .calendar-activities {{ min-height: 3.5rem; }}
+            .calendar-activities .activity {{ margin-bottom: 0.25rem; padding: 0.25rem 0.15rem; text-align: center; }}
+            .calendar-activities .activity strong {{ display: none; }}
+            .calendar-activities .strength-icon {{ margin-right: 0; }}
+            .calendar-activities .activity small {{ font-size: 0.52rem; line-height: 1.15; margin-top: 0; overflow-wrap: anywhere; }}
             .calendar-total {{ align-items: flex-start; flex-direction: column; gap: 0.35rem; }}
             .calendar-total small {{ margin-left: 0.4rem; }}
         }}
@@ -686,6 +858,8 @@ def main():
         connection.close()
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(report, encoding="utf-8")
+    if KB_ICON.is_file():
+        shutil.copy2(KB_ICON, OUTPUT.parent / KB_ICON.name)
     print(f"Wrote {OUTPUT}")
 
 

@@ -32,6 +32,36 @@ For the workflow, add `SUPABASE_DB_URL` and whichever account token secrets are 
 
 GitHub Pages visibility is controlled by GitHub organization and repository settings. A private repository does not automatically make a Pages site private on every GitHub plan, so check the Pages visibility setting before publishing personal health data.
 
+## Adaptive Pixel Trail
+
+The **Adaptive Pixel Trail** in the report's At a glance section is a 28-day visual of training consistency. Each small square is a day and also a seed in a small, recoverable garden. It is designed to make momentum and return-to-training visible without treating missed sessions as failure.
+
+The current cadence is hard-coded in `build_report.py` and can later be moved to configuration:
+
+- Run: every `2` days
+- Strength: every `4` days
+- Cadence anchor: `15 September 2026`
+- Repair threshold: `2` later sessions
+
+### Square states
+
+- **Green:** a run was recorded.
+- **Amber:** a strength session was recorded.
+- **Teal:** both run and strength were recorded on the same day; this is a growth/bloom state.
+- **Soft grey:** a planned recovery day or a day outside the cadence.
+- **Orange:** a scheduled day was missed and is temporarily waiting for care.
+- **Light green:** an earlier orange square has been restored.
+
+### Repair and growth rules
+
+1. On a scheduled run or strength day, recording the relevant activity gives the day its training colour.
+2. A scheduled day with no run or strength activity becomes orange only after the day has passed; today is never marked as missed.
+3. Each later run or strength session contributes toward repair. After two later sessions, an orange square becomes light green.
+4. Restored squares remain positive evidence of recovery. There are no permanent failure states and no irreversible penalties.
+5. The card's message reflects the current state: it celebrates growth, acknowledges repaired momentum, or gently invites the next session when a seed is waiting for care.
+
+The trail provides chronological progression, while the garden metaphor makes recovery visible: every later session can nourish an earlier square. Future enhancements could add a gentle transition from orange to green, a brief bloom pulse for mixed training days, and seasonal colour palettes without changing the consistency rules.
+
 ## Run notebook
 
 ```bash
