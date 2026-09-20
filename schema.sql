@@ -3,6 +3,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_name TEXT NOT NULL DEFAULT 'manga' UNIQUE,
     garmin_user_id TEXT UNIQUE,
     email TEXT UNIQUE,
     display_name TEXT,
@@ -66,10 +67,20 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
     sedentary_seconds INTEGER,
     floors_climbed INTEGER,
     resting_heart_rate INTEGER,
+    is_final BOOLEAN NOT NULL DEFAULT TRUE,
     source_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(user_id, summary_date)
 );
+
+ALTER TABLE daily_summaries
+    ADD COLUMN IF NOT EXISTS is_final BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS account_name TEXT NOT NULL DEFAULT 'manga';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_name
+    ON users(account_name);
 
 CREATE TABLE IF NOT EXISTS daily_sport_totals (
     id BIGSERIAL PRIMARY KEY,

@@ -3,7 +3,7 @@ name: Build and publish Garmin report
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 5 * * *"
+    - cron: "15 */6 * * *"
 
 concurrency:
   group: pages
@@ -31,8 +31,10 @@ jobs:
       - name: Sync Garmin data
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_MANGA_EMAIL: ${{ secrets.GARMIN_MANGA_EMAIL }}
+          GARMIN_MANGA_PASSWORD: ${{ secrets.GARMIN_MANGA_PASSWORD }}
+          GARMIN_CHIPS_EMAIL: ${{ secrets.GARMIN_CHIPS_EMAIL }}
+          GARMIN_CHIPS_PASSWORD: ${{ secrets.GARMIN_CHIPS_PASSWORD }}
         run: python sync_garmin_to_supabase.py
         
       - name: Build report from Supabase

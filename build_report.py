@@ -8,6 +8,7 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "site" / "index.html"
+ACCOUNT_NAMES = ("manga", "chips")
 
 
 def load_env_file():
@@ -20,6 +21,12 @@ def load_env_file():
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"'))
+
+
+def ensure_schema(connection):
+    with connection.cursor() as cursor:
+        cursor.execute((ROOT / "schema.sql").read_text())
+    connection.commit()
 
 
 def format_duration(seconds):
@@ -87,6 +94,7 @@ def period_totals(rows, start_date, end_date):
 def fetch_rows(connection):
     query = """
         SELECT
+            u.account_name,
             ds.summary_date,
             ds.total_distance_meters,
             ds.sedentary_seconds,
@@ -95,6 +103,8 @@ def fetch_rows(connection):
             COALESCE(dst.total_duration_seconds, 0) AS run_duration_seconds,
             COALESCE(activity_days.activities, '[]'::jsonb) AS activities
         FROM daily_summaries AS ds
+        JOIN users AS u
+            ON u.id = ds.user_id
         LEFT JOIN daily_sport_totals AS dst
             ON dst.user_id = ds.user_id
            AND dst.summary_date = ds.summary_date
@@ -137,7 +147,9 @@ def activity_markup(activities):
         name = html.escape(str(activity.get("name", "Activity")))
         distance = format_distance(activity.get("distance_meters", 0))
         duration = format_duration(activity.get("duration_seconds", 0))
-        items.append(f"<span class=\"activity\">{name}<small>{distance} km · {duration}</small></span>")
+        sport = str(activity.get("sport", "")).lower()
+        activity_class = "activity activity-strength" if sport in {"strength", "strength_training"} else "activity activity-running"
+        items.append(f"<span class=\"{activity_class}\"><strong>{name}</strong><small>{distance} km · {duration}</small></span>")
     return "".join(items)
 
 
@@ -145,32 +157,39 @@ def week_calendar(rows, start_date, end_date):
     row_by_date = {row[0]: row for row in rows if start_date <= row[0] <= end_date}
     days = [start_date + timedelta(days=index) for index in range(7)]
     totals = period_totals(rows, start_date, end_date)
-    headers = "".join(f"<th>{html.escape(format_date(day))}</th>" for day in days)
-    activity_cells = []
+    day_cards = []
     running_activity_count = 0
+    strength_activity_count = 0
     for day in days:
         row = row_by_date.get(day)
         activities = [
             activity for activity in (row[6] if row else [])
-            if str(activity.get("sport", "")).lower() == "running"
+            if str(activity.get("sport", "")).lower() in {"running", "strength", "strength_training"}
         ]
-        running_activity_count += len(activities)
-        activity_cells.append(f"<td class=\"calendar-activities\">{activity_markup(activities)}</td>")
+        running_activity_count += sum(
+            1 for activity in activities
+            if str(activity.get("sport", "")).lower() == "running"
+        )
+        strength_activity_count += sum(
+            1 for activity in activities
+            if str(activity.get("sport", "")).lower() in {"strength", "strength_training"}
+        )
+        day_cards.append(
+            f"<article class=\"calendar-day\"><h4>{html.escape(format_date(day))}</h4>"
+            f"<div class=\"calendar-activities\">{activity_markup(activities)}</div></article>"
+        )
     week_total = (
-        f"<strong>{running_activity_count} runs</strong>"
+        f"<strong>{running_activity_count} runs · {strength_activity_count} strength</strong>"
         f"<small>{format_distance(totals['run_distance'])} km</small>"
         f"<small>{format_duration(totals['run_time'])}</small>"
     )
-    activity_row = "<tr><th>Runs</th>" + "".join(activity_cells) + f"<td class=\"calendar-total\">{week_total}</td></tr>"
     return (
-        "<div class=\"calendar-wrap\"><table class=\"calendar\"><thead><tr>"
-        "<th>Running activities</th>" + headers + "<th>Week totals</th></tr></thead><tbody>"
-        + activity_row
-        + "</tbody></table></div>"
+        f"<div class=\"calendar-grid\">{''.join(day_cards)}"
+        f"<aside class=\"calendar-total\"><span>Week totals</span>{week_total}</aside></div>"
     )
 
 
-def render(rows):
+def _render_single_user(rows, account_name):
     today = date.today()
     current_monday = today - timedelta(days=today.weekday())
     last_week_monday = current_monday - timedelta(days=7)
@@ -276,6 +295,11 @@ def render(rows):
         h2 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(1.5rem, 3vw, 2.2rem); font-weight: 600; margin: 0; }}
         h3 {{ font-family: "Space Grotesk", sans-serif; font-size: 1.2rem; font-weight: 600; margin: 0; }}
         .updated {{ color: var(--muted); font: 0.72rem Arial, sans-serif; letter-spacing: 0.04em; margin: 1.25rem 0 0; text-transform: uppercase; }}
+        .account-switch {{ align-items: center; border-bottom: 1px solid var(--line); display: flex; gap: 0.5rem; margin-bottom: 1.5rem; padding-bottom: 1rem; }}
+        .account-switch-label {{ color: var(--muted); font: 700 0.68rem Arial, sans-serif; letter-spacing: 0.08em; margin-right: 0.35rem; text-transform: uppercase; }}
+        .account-button {{ background: transparent; border: 1px solid var(--line); color: var(--muted); cursor: pointer; font: 600 0.78rem "DM Sans", sans-serif; padding: 0.45rem 0.8rem; text-transform: capitalize; }}
+        .account-button.active, .account-button:hover {{ background: var(--ink); border-color: var(--ink); color: var(--paper); }}
+        .user-panel.hidden {{ display: none; }}
         section {{ margin: 2.8rem 0; }}
         .section-heading {{ align-items: end; display: flex; justify-content: space-between; margin-bottom: 1rem; }}
         .summary-grid {{ display: grid; gap: 1rem; grid-template-columns: repeat(4, minmax(0, 1fr)); }}
@@ -295,17 +319,18 @@ def render(rows):
         .week-group .table-wrap {{ padding: 0 1rem 1rem; }}
         .calendar-card {{ background: var(--card); border: 1px solid var(--line); margin: 1rem 0; padding: 1rem; }}
         .calendar-card h3 {{ border-bottom: 1px solid var(--line); padding-bottom: 0.8rem; }}
-        .calendar-wrap {{ overflow-x: auto; }}
-        .calendar {{ min-width: 920px; }}
-        .calendar th, .calendar td {{ min-width: 105px; vertical-align: top; }}
-        .calendar th:first-child, .calendar td:first-child {{ min-width: 115px; }}
-        .calendar thead th {{ background: var(--ink); color: var(--paper); }}
-        .calendar .calendar-total {{ background: var(--accent-soft); font-weight: 600; min-width: 120px; }}
-        .calendar-total strong, .calendar-total small {{ display: block; }}
-        .calendar-total small {{ font-size: 0.75rem; font-weight: 400; margin-top: 0.35rem; }}
-        .calendar-activities {{ min-height: 5rem; text-align: left; white-space: normal; }}
+        .calendar-grid {{ display: grid; gap: 0.6rem; grid-template-columns: repeat(7, minmax(0, 1fr)); }}
+        .calendar-day {{ background: var(--card); border: 1px solid var(--line); min-height: 8.5rem; padding: 0.6rem; }}
+        .calendar-day h4 {{ border-bottom: 1px solid var(--line); font: 600 0.8rem "Space Grotesk", sans-serif; margin: 0 0 0.6rem; padding-bottom: 0.45rem; }}
+        .calendar-activities {{ min-height: 5rem; text-align: left; }}
         .activity {{ background: #e3eee8; border-left: 3px solid var(--teal); display: block; margin: 0 0 0.4rem; padding: 0.35rem; }}
-        .activity small {{ color: var(--muted); display: block; font-size: 0.7rem; margin-top: 0.15rem; }}
+        .activity-strength {{ background: #f7e5c8; border-left-color: #c8872d; }}
+        .activity strong {{ display: block; font-size: 0.78rem; overflow-wrap: anywhere; }}
+        .activity small {{ color: var(--muted); display: block; font-size: 0.68rem; margin-top: 0.15rem; }}
+        .calendar-total {{ align-items: center; background: var(--accent-soft); border: 1px solid var(--accent); display: flex; gap: 0.75rem; grid-column: 1 / -1; justify-content: space-between; padding: 0.8rem 1rem; }}
+        .calendar-total > span {{ font: 700 0.72rem Arial, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }}
+        .calendar-total strong, .calendar-total small {{ display: block; }}
+        .calendar-total small {{ display: inline-block; font-size: 0.78rem; font-weight: 400; margin-left: 0.75rem; }}
         .empty-day {{ color: var(--muted); }}
         table {{ border-collapse: collapse; min-width: 720px; width: 100%; }}
         .table-wrap {{ overflow-x: auto; }}
@@ -321,13 +346,18 @@ def render(rows):
             .section-heading {{ align-items: start; flex-direction: column; gap: 0.35rem; }}
             .summary-card {{ padding: 1rem; }}
             .week-section {{ margin-left: -0.25rem; margin-right: -0.25rem; padding: 0.75rem; }}
+            .calendar-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            .calendar-day {{ min-height: 7rem; padding: 0.5rem; }}
+            .calendar-day h4 {{ font-size: 0.72rem; }}
+            .calendar-total {{ align-items: flex-start; flex-direction: column; gap: 0.35rem; }}
+            .calendar-total small {{ margin-left: 0.4rem; }}
         }}
   </style>
 </head>
 <body>
     <main class="page">
         <header>
-            <p class="eyebrow">Training Log · Garmin Connect</p>
+            <p class="eyebrow">Training Log · {html.escape(account_name)}</p>
             <h1>Training Log</h1>
             <p class="updated">{html.escape(generated)}</p>
         </header>
@@ -343,6 +373,66 @@ def render(rows):
 """
 
 
+def render(rows):
+        rows_by_account = OrderedDict((account, []) for account in ACCOUNT_NAMES)
+        for row in rows:
+                account_name = row[0] or "manga"
+                rows_by_account.setdefault(account_name, []).append(row[1:])
+
+        documents = [
+                _render_single_user(account_rows, account_name)
+                for account_name, account_rows in rows_by_account.items()
+        ]
+        first_document = documents[0]
+        head, _body = first_document.split("<body>", 1)
+        _body_content, tail = first_document.split("</body>", 1)
+        panels = []
+        for index, (account_name, document) in enumerate(zip(rows_by_account, documents)):
+                panel_content = document.split('<main class="page">', 1)[1].split("</main>", 1)[0]
+                hidden = "" if index == 0 else " hidden"
+                panels.append(
+                        f'<section class="user-panel{hidden}" data-account="{html.escape(account_name)}">'
+                        f"{panel_content}</section>"
+                )
+        buttons = "".join(
+                f'<button class="account-button{" active" if index == 0 else ""}" '
+                f'data-account="{html.escape(account_name)}" aria-pressed="{"true" if index == 0 else "false"}">{html.escape(account_name)}</button>'
+                for index, account_name in enumerate(rows_by_account)
+        )
+        switcher = (
+                '<nav class="account-switch" aria-label="Select training account">'
+                '<span class="account-switch-label">View data for</span>'
+                f"{buttons}</nav>"
+        )
+        script = """
+<script>
+    document.querySelectorAll('.account-button').forEach((button) => {
+        button.addEventListener('click', () => {
+            const account = button.dataset.account;
+            document.querySelectorAll('.account-button').forEach((item) => {
+                const active = item === button;
+                item.classList.toggle('active', active);
+                item.setAttribute('aria-pressed', active ? 'true' : 'false');
+            });
+            document.querySelectorAll('.user-panel').forEach((panel) => {
+                panel.classList.toggle('hidden', panel.dataset.account !== account);
+            });
+        });
+    });
+</script>
+"""
+        return (
+                head
+                + "<body><main class=\"page\">"
+                + switcher
+                + "".join(panels)
+                + "</main>"
+                + script
+                + "</body>"
+                + tail
+        )
+
+
 def main():
     load_env_file()
     database_url = os.getenv("SUPABASE_DB_URL")
@@ -350,6 +440,7 @@ def main():
         raise RuntimeError("SUPABASE_DB_URL is not configured")
     connection = psycopg2.connect(database_url, sslmode="require")
     try:
+        ensure_schema(connection)
         report = render(fetch_rows(connection))
     finally:
         connection.close()

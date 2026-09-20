@@ -19,6 +19,7 @@ from garminconnect import (
 
 ROOT = Path(__file__).resolve().parent
 logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
+ACCOUNT_NAMES = ("manga", "chips")
 
 
 def load_env_file():
@@ -62,8 +63,10 @@ def category_for_sport(sport: str) -> str:
     return "other"
 
 
-def init_garmin() -> Garmin:
-    tokenstore = os.getenv("GARMINTOKENS", "~/.garminconnect")
+def init_garmin(account_name: str) -> Garmin:
+    account_key = account_name.upper()
+    default_tokenstore = "~/.garminconnect" if account_name == "manga" else f"~/.garminconnect/{account_name}"
+    tokenstore = os.getenv(f"GARMINTOKENS_{account_key}", default_tokenstore)
     tokenstore_path = str(Path(tokenstore).expanduser())
 
     try:
@@ -74,8 +77,12 @@ def init_garmin() -> Garmin:
     except (GarminConnectAuthenticationError, GarminConnectConnectionError):
         pass
 
-    email = os.getenv("GARMIN_EMAIL") or input("Garmin email: ").strip()
-    password = os.getenv("GARMIN_PASSWORD") or getpass("Garmin password: ")
+    email = os.getenv(f"GARMIN_{account_key}_EMAIL") or input(
+        f"Garmin {account_name} email: "
+    ).strip()
+    password = os.getenv(f"GARMIN_{account_key}_PASSWORD") or getpass(
+        f"Garmin {account_name} password: "
+    )
     garmin = Garmin(
         email=email,
         password=password,
@@ -97,20 +104,36 @@ def ensure_schema(cur):
     cur.execute((ROOT / "schema.sql").read_text())
 
 
-def upsert_user(cur, profile: dict[str, Any]) -> str:
+def existing_summary_statuses(
+    cur, user_id: str, start_date: date, end_date: date
+) -> dict[date, bool]:
+    cur.execute(
+        """
+        SELECT summary_date, is_final
+        FROM daily_summaries
+        WHERE user_id = %s
+          AND summary_date BETWEEN %s AND %s
+        """,
+        (user_id, start_date, end_date),
+    )
+    return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def upsert_user(cur, profile: dict[str, Any], account_name: str) -> str:
     garmin_user_id = str(profile.get("userId") or profile.get("id") or "garmin-user")
-    email = profile.get("email") or os.getenv("GARMIN_EMAIL")
+    email = profile.get("email") or os.getenv(f"GARMIN_{account_name.upper()}_EMAIL")
     display_name = profile.get("displayName") or profile.get("fullName")
     cur.execute(
         """
-        INSERT INTO users (garmin_user_id, email, display_name)
-        VALUES (%s, %s, %s)
+        INSERT INTO users (account_name, garmin_user_id, email, display_name)
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT (garmin_user_id) DO UPDATE SET
+            account_name = EXCLUDED.account_name,
             email = COALESCE(EXCLUDED.email, users.email),
             display_name = COALESCE(EXCLUDED.display_name, users.display_name)
         RETURNING id
         """,
-        (garmin_user_id, email, display_name),
+        (account_name, garmin_user_id, email, display_name),
     )
     return str(cur.fetchone()[0])
 
@@ -128,15 +151,21 @@ def get_sport_type_id(cur, sport: str) -> int:
     return cur.fetchone()[0]
 
 
-def upsert_daily_summary(cur, user_id: str, summary_date: date, summary: dict[str, Any]):
+def upsert_daily_summary(
+    cur,
+    user_id: str,
+    summary_date: date,
+    summary: dict[str, Any],
+    is_final: bool,
+):
     cur.execute(
         """
         INSERT INTO daily_summaries (
             user_id, summary_date, steps, active_calories, total_calories,
             total_distance_meters, active_seconds, sedentary_seconds,
-            floors_climbed, resting_heart_rate, source_json
+            floors_climbed, resting_heart_rate, is_final, source_json
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (user_id, summary_date) DO UPDATE SET
             steps = EXCLUDED.steps,
             active_calories = EXCLUDED.active_calories,
@@ -146,6 +175,7 @@ def upsert_daily_summary(cur, user_id: str, summary_date: date, summary: dict[st
             sedentary_seconds = EXCLUDED.sedentary_seconds,
             floors_climbed = EXCLUDED.floors_climbed,
             resting_heart_rate = EXCLUDED.resting_heart_rate,
+            is_final = EXCLUDED.is_final,
             source_json = EXCLUDED.source_json
         """,
         (
@@ -159,6 +189,7 @@ def upsert_daily_summary(cur, user_id: str, summary_date: date, summary: dict[st
             as_int(summary.get("sedentarySeconds")),
             as_int(summary.get("floorsAscended")),
             as_int(summary.get("restingHeartRate")),
+            is_final,
             Json(summary),
         ),
     )
@@ -263,8 +294,8 @@ def upsert_daily_sport_total(
     )
 
 
-def sync_range(start_date: date, end_date: date):
-    garmin = init_garmin()
+def sync_account(account_name: str, start_date: date, end_date: date):
+    garmin = init_garmin(account_name)
     profile = garmin.get_user_profile()
     conn = get_connection()
     activity_count = 0
@@ -272,12 +303,50 @@ def sync_range(start_date: date, end_date: date):
     try:
         with conn.cursor() as cur:
             ensure_schema(cur)
-            user_id = upsert_user(cur, profile)
-            current = start_date
-            while current <= end_date:
+            user_id = upsert_user(cur, profile, account_name)
+            stored_statuses = existing_summary_statuses(
+                cur, user_id, start_date, end_date
+            )
+            today = date.today()
+            yesterday = today - timedelta(days=1)
+            refresh_dates = {
+                refresh_date
+                for refresh_date in (today, yesterday)
+                if start_date <= refresh_date <= end_date
+                and (
+                    refresh_date == today
+                    or
+                    refresh_date not in stored_statuses
+                    or not stored_statuses[refresh_date]
+                )
+            }
+            dates_to_sync = [
+                start_date + timedelta(days=offset)
+                for offset in range((end_date - start_date).days + 1)
+                if (
+                    start_date + timedelta(days=offset) not in stored_statuses
+                    or start_date + timedelta(days=offset) in refresh_dates
+                )
+            ]
+            skipped_count = len(stored_statuses) - len(refresh_dates)
+            if not dates_to_sync:
+                print(
+                    f"No dates to sync from {start_date} through {end_date}; "
+                    f"skipped {skipped_count} stored historical days."
+                )
+                conn.commit()
+                return
+
+            for current in dates_to_sync:
                 date_string = current.isoformat()
                 summary = garmin.get_user_summary(date_string) or {}
-                upsert_daily_summary(cur, user_id, current, summary)
+                upsert_daily_summary(
+                    cur,
+                    user_id,
+                    current,
+                    summary,
+                    is_final=current < today,
+                )
                 summary_count += 1
 
                 activities = garmin.get_activities_by_date(
@@ -308,7 +377,6 @@ def sync_range(start_date: date, end_date: date):
                         int(values[2]),
                         int(values[3]),
                     )
-                current += timedelta(days=1)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -316,9 +384,16 @@ def sync_range(start_date: date, end_date: date):
     finally:
         conn.close()
     print(
-        f"Synced {summary_count} daily summaries and "
-        f"{activity_count} activities from {start_date} through {end_date}."
+        f"[{account_name}] Synced {summary_count} daily summaries and "
+        f"{activity_count} activities from {start_date} through {end_date}; "
+        f"skipped {skipped_count} finalized days; "
+        "today remains live and yesterday is finalized once."
     )
+
+
+def sync_range(start_date: date, end_date: date):
+    for account_name in ACCOUNT_NAMES:
+        sync_account(account_name, start_date, end_date)
 
 
 def main():
