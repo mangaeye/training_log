@@ -1,13 +1,17 @@
 import html
+import json
+import math
 import os
 from collections import OrderedDict
 from datetime import date, timedelta
 from pathlib import Path
+from xml.etree import ElementTree
 
 import psycopg2
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "site" / "index.html"
+ROUTE_KML = ROOT / "route.kml"
 ACCOUNT_NAMES = ("manga", "chips")
 
 
@@ -37,6 +41,14 @@ def format_duration(seconds):
     return f"{hours:02d}:{minutes:02d}"
 
 
+def format_run_duration(seconds):
+    if seconds is None:
+        return "-"
+    total_minutes = int((float(seconds) + 30) // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours} h {minutes:02d} m" if hours else f"{minutes} m"
+
+
 def format_date(day):
     return day.strftime("%a %d %b")
 
@@ -45,6 +57,164 @@ def format_distance(meters):
     if meters is None:
         return "-"
     return f"{float(meters) / 1000:.2f}"
+
+
+def format_whole_distance(meters):
+    if meters is None:
+        return "-"
+    return str(int(float(meters) / 1000 + 0.5))
+
+
+def route_coordinates():
+    if not ROUTE_KML.exists():
+        return []
+    root = ElementTree.parse(ROUTE_KML).getroot()
+    namespace = "{http://www.opengis.net/kml/2.2}"
+    points = []
+    for coordinates in root.findall(f".//{namespace}LineString/{namespace}coordinates"):
+        for value in coordinates.text.split():
+            longitude, latitude, *_ = (float(part) for part in value.split(","))
+            points.append((latitude, longitude))
+    return points
+
+
+def segment_distance_meters(first, second):
+    latitude_1, longitude_1 = map(math.radians, first)
+    latitude_2, longitude_2 = map(math.radians, second)
+    delta_latitude = latitude_2 - latitude_1
+    delta_longitude = longitude_2 - longitude_1
+    haversine = (
+        math.sin(delta_latitude / 2) ** 2
+        + math.cos(latitude_1)
+        * math.cos(latitude_2)
+        * math.sin(delta_longitude / 2) ** 2
+    )
+    return 2 * 6371000 * math.asin(math.sqrt(haversine))
+
+
+def route_distance_meters(points=None):
+    points = route_coordinates() if points is None else points
+    return sum(
+        segment_distance_meters(first, second)
+        for first, second in zip(points, points[1:])
+    )
+
+
+def route_progress_point(points, distance_meters):
+    if not points:
+        return None
+    remaining = max(distance_meters, 0)
+    for first, second in zip(points, points[1:]):
+        segment = segment_distance_meters(first, second)
+        if remaining <= segment:
+            fraction = remaining / segment if segment else 0
+            return [
+                first[0] + (second[0] - first[0]) * fraction,
+                first[1] + (second[1] - first[1]) * fraction,
+            ]
+        remaining -= segment
+    return list(points[-1])
+
+
+def sampled_route(points, maximum_points=1200):
+    if len(points) <= maximum_points:
+        return points
+    step = math.ceil((len(points) - 1) / (maximum_points - 1))
+    sampled = points[::step]
+    if sampled[-1] != points[-1]:
+        sampled.append(points[-1])
+    return sampled
+
+
+def long_run_markup(
+    rows, today, account_name, completed_by_account, completed_by_account_yesterday
+):
+    epoch = date(2026, 9, 15)
+    route_points = route_coordinates()
+    total_race_distance = route_distance_meters(route_points)
+    completed_rows = [row for row in rows if epoch <= row[0] <= today]
+    completed_meters = sum(float(row[1] or 0) for row in completed_rows)
+    elapsed_days = max((today - epoch).days + 1, 1)
+    average_meters_per_day = completed_meters / elapsed_days
+    remaining_meters = max(total_race_distance - completed_meters, 0)
+    days_remaining = (
+        math.ceil(remaining_meters / average_meters_per_day)
+        if average_meters_per_day > 0 else None
+    )
+    arrival_date = today + timedelta(days=days_remaining) if days_remaining is not None else None
+    finished = completed_meters >= total_race_distance
+    completed_value = "FINISHED!" if finished else f"{format_whole_distance(completed_meters)} km"
+    arrival_value = "ARRIVED!" if finished else (arrival_date.strftime('%a %d %b %Y') if arrival_date else '-')
+    map_id = "long-run-map-" + "".join(
+        character for character in f"{account_name}-{today}" if character.isalnum()
+    )
+    route_json = json.dumps([[latitude, longitude] for latitude, longitude in sampled_route(route_points)])
+    marker_scripts = []
+    marker_names = {"manga": "m", "chips": "c"}
+    for marker_account, marker_name in marker_names.items():
+        marker_point = route_progress_point(
+            route_points, completed_by_account.get(marker_account, 0)
+        )
+        yesterday_point = route_progress_point(
+            route_points, completed_by_account_yesterday.get(marker_account, 0)
+        )
+        if marker_point:
+            marker_scripts.append(
+                f"const marker{marker_name.upper()} = L.marker({json.dumps(marker_point)}, "
+                f"{{icon: L.divIcon({{className: 'runner-marker runner-marker-{marker_account}', html: '<span>{marker_name}</span>', "
+                "iconSize: [28, 28], iconAnchor: [14, 14]})}).addTo(map).bindTooltip('"
+                f"{marker_account.title()}');"
+            )
+        if yesterday_point:
+            marker_scripts.append(
+                f"L.marker({json.dumps(yesterday_point)}, "
+                f"{{icon: L.divIcon({{className: 'runner-marker runner-marker-{marker_account} runner-marker-shadow', html: '<span>{marker_name}</span>', "
+                "iconSize: [28, 28], iconAnchor: [14, 14]})}).addTo(map).bindTooltip('"
+                f"{marker_account.title()} yesterday');"
+            )
+    marker_script = "".join(marker_scripts)
+    current_marker_name = marker_names.get(account_name, "m").upper()
+    map_markup = ""
+    if route_points:
+        map_markup = (
+            f'<div class="long-run-map-shell"><div class="long-run-map-actions">'
+            f'<button type="button" data-map-action="current">Current location</button>'
+            f'<button type="button" data-map-action="all">Zoom to all</button>'
+            f'<button type="button" data-map-action="out">Zoom out</button></div>'
+            f'<div class="long-run-map" id="{map_id}"></div>'
+            '<div class="long-run-map-key"><span><i class="route-key"></i>Race route</span>'
+            '<span><i class="runner-key runner-key-manga"></i>m</span>'
+            '<span><i class="runner-key runner-key-chips"></i>c</span>'
+            '<span><i class="runner-key runner-key-shadow"></i>Yesterday\'s location</span></div></div>'
+            f"<script>(function() {{"
+            f"const map = L.map('{map_id}', {{scrollWheelZoom: false}});"
+            "const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', "
+            "{attribution: '&copy; OpenStreetMap contributors'});"
+            "const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', "
+            "{attribution: 'Tiles &copy; Esri'});"
+            "osm.addTo(map);"
+            f"const route = L.polyline({route_json}, {{color: '#ef6546', weight: 4, opacity: 0.9}}).addTo(map);"
+            f"{marker_script}"
+            "const runnerMarkers = [markerM, markerC];"
+            "map.fitBounds(route.getBounds(), {padding: [18, 18]});"
+            "L.control.layers({'OpenStreetMap': osm, 'Esri satellite': satellite}, {}).addTo(map);"
+            f"const mapShell = document.getElementById('{map_id}').parentElement;"
+            f"mapShell.querySelector('[data-map-action=current]').addEventListener('click', () => map.setView(marker{current_marker_name}.getLatLng(), 14));"
+            "mapShell.querySelector('[data-map-action=all]').addEventListener('click', () => map.fitBounds(L.featureGroup(runnerMarkers).getBounds(), {padding: [48, 48], maxZoom: 15}));"
+            "mapShell.querySelector('[data-map-action=out]').addEventListener('click', () => map.fitBounds(route.getBounds(), {padding: [18, 18]}));"
+            f"document.getElementById('{map_id}')._leafletMap = map;"
+            "})();</script>"
+        )
+    return (
+        "<details class=\"long-run\" open><summary>The Long Run</summary>"
+        "<dl class=\"long-run-grid\">"
+        f"<div><dt>Total race distance</dt><dd>{format_whole_distance(total_race_distance)} km</dd></div>"
+        f"<div><dt>Km completed</dt><dd>{completed_value}</dd></div>"
+        f"<div><dt>Days remaining</dt><dd>{days_remaining if days_remaining is not None else '-'} </dd></div>"
+        f"<div><dt>Estimated day of arrival</dt><dd>{arrival_value}</dd></div>"
+        f"</dl>{map_markup}"
+        "</details>"
+    )
 
 
 def week_label(day):
@@ -146,7 +316,7 @@ def activity_markup(activities):
     for activity in activities:
         name = html.escape(str(activity.get("name", "Activity")))
         distance = format_distance(activity.get("distance_meters", 0))
-        duration = format_duration(activity.get("duration_seconds", 0))
+        duration = format_run_duration(activity.get("duration_seconds", 0))
         sport = str(activity.get("sport", "")).lower()
         activity_class = "activity activity-strength" if sport in {"strength", "strength_training"} else "activity activity-running"
         details = "" if sport in {"strength", "strength_training"} else f"<small>{distance} km · {duration}</small>"
@@ -182,11 +352,9 @@ def week_calendar(rows, start_date, end_date):
     week_total = (
         f"<strong>{running_activity_count} runs · {strength_activity_count} strength</strong>"
         f"<small>Run distance: {format_distance(totals['run_distance'])} km</small>"
-        f"<small>Run time: {format_duration(totals['run_time'])}</small>"
+        f"<small>Run time: {format_run_duration(totals['run_time'])}</small>"
         f"<small>Total distance: {format_distance(totals['total_distance'])} km</small>"
-        f"<small>Sedentary: {format_duration(totals['sedentary'])}</small>"
-        f"<small>Avg run distance/day: {format_distance(totals['average_run_distance'])} km</small>"
-        f"<small>Avg run time/day: {format_duration(totals['average_run_time'])}</small>"
+        # f"<small>Sedentary: {format_duration(totals['sedentary'])}</small>"
     )
     return (
         f"<div class=\"calendar-grid\">{''.join(day_cards)}"
@@ -194,7 +362,9 @@ def week_calendar(rows, start_date, end_date):
     )
 
 
-def _render_single_user(rows, account_name):
+def _render_single_user(
+    rows, account_name, completed_by_account, completed_by_account_yesterday
+):
     today = date.today()
     current_monday = today - timedelta(days=today.weekday())
     last_week_monday = current_monday - timedelta(days=7)
@@ -210,7 +380,7 @@ def _render_single_user(rows, account_name):
             f"{f' to {format_date(end_date)}' if start_date != end_date else ''}</p>"
             "<dl>"
             f"<div><dt>Total distance</dt><dd>{format_distance(totals['total_distance'])} km</dd></div>"
-            f"<div><dt>Avg sedentary/day</dt><dd>{format_duration(totals['average_sedentary'])}</dd></div>"
+            # f"<div><dt>Avg sedentary/day</dt><dd>{format_duration(totals['average_sedentary'])}</dd></div>"
             "</dl></article>"
         )
 
@@ -223,22 +393,29 @@ def _render_single_user(rows, account_name):
     for monday, week_rows in grouped.items():
         label = week_label(monday)
         body = []
-        for day, total_distance, sedentary, run_count, run_distance, run_time, _activities in week_rows:
+        for day, total_distance, _sedentary, run_count, run_distance, run_time, activities in week_rows:
+            strength_count = sum(
+                1 for activity in activities
+                if str(activity.get("sport", "")).lower()
+                in {"strength", "strength_training"}
+            )
             body.append(
                 "<tr>"
                 f"<td>{html.escape(format_date(day))}</td>"
                 f"<td>{html.escape(format_distance(total_distance))}</td>"
-                f"<td>{html.escape(format_duration(sedentary))}</td>"
+                # f"<td>{html.escape(format_duration(_sedentary))}</td>"
                 f"<td>{int(run_count or 0)}</td>"
+                f"<td>{strength_count}</td>"
                 f"<td>{html.escape(format_distance(run_distance))}</td>"
-                f"<td>{html.escape(format_duration(run_time))}</td>"
+                f"<td>{html.escape(format_run_duration(run_time))}</td>"
                 "</tr>"
             )
         sections.append(
             f"<details class=\"week-group\"><summary>{html.escape(label)}</summary>"
             "<div class=\"table-wrap\"><table><thead><tr>"
-            "<th>Date</th><th>Total distance (km)</th><th>Sedentary time</th>"
-            "<th>Run activities</th><th>Run distance (km)</th><th>Run time</th>"
+            "<th>Date</th><th>Total distance (km)</th>"
+            "<th>Run activities</th><th>Strength activities</th>"
+            "<th>Run distance (km)</th><th>Run time</th>"
             "</tr></thead><tbody>"
             + "".join(body)
             + "</tbody></table></div></details>"
@@ -250,7 +427,8 @@ def _render_single_user(rows, account_name):
         f"<article class=\"calendar-card\"><h3>Week {last_week_monday.isocalendar().week} · Last week</h3>"
         f"{week_calendar(rows, last_week_monday, current_monday - timedelta(days=1))}</article>"
         f"<article class=\"calendar-card\"><h3>Week {current_monday.isocalendar().week} · Current week</h3>"
-        f"{week_calendar(rows, current_monday, current_monday + timedelta(days=6))}</article></section>"
+        f"{week_calendar(rows, current_monday, current_monday + timedelta(days=6))}</article>"
+        f"{long_run_markup(rows, today, account_name, completed_by_account, completed_by_account_yesterday)}</section>"
     )
 
     latest_data_date = max((row[0] for row in rows), default=None)
@@ -264,6 +442,7 @@ def _render_single_user(rows, account_name):
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <title>Training Log</title>
   <style>
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
@@ -290,8 +469,9 @@ def _render_single_user(rows, account_name):
         .page {{ background: var(--paper); max-width: 1180px; margin: 0 auto; min-height: 100vh; padding: clamp(1.5rem, 4vw, 4rem) clamp(1rem, 4vw, 2.5rem); }}
         header {{ border-bottom: 2px solid var(--ink); margin-bottom: 2.8rem; padding-bottom: 2rem; }}
         .eyebrow {{ color: var(--accent); font: 700 0.72rem/1.2 Arial, sans-serif; letter-spacing: 0.16em; margin: 0 0 0.85rem; text-transform: uppercase; }}
-        h1 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(3rem, 9vw, 7.5rem); font-weight: 600; letter-spacing: -0.055em; line-height: 0.88; margin: 0; max-width: 9ch; }}
+        h1 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(2rem, 5vw, 4rem); font-weight: 600; letter-spacing: -0.055em; line-height: 0.92; margin: 0; max-width: 12ch; }}
         h2 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(1.5rem, 3vw, 2.2rem); font-weight: 600; margin: 0; }}
+        .summary-section h2 {{ font-size: clamp(1.15rem, 2vw, 1.6rem); }}
         h3 {{ font-family: "Space Grotesk", sans-serif; font-size: 1.2rem; font-weight: 600; margin: 0; }}
         .updated {{ color: var(--muted); font: 0.72rem Arial, sans-serif; letter-spacing: 0.04em; margin: 1.25rem 0 0; text-transform: uppercase; }}
         .account-switch {{ align-items: center; border-bottom: 1px solid var(--line); display: flex; gap: 0.5rem; margin-bottom: 1.5rem; padding-bottom: 1rem; }}
@@ -318,6 +498,32 @@ def _render_single_user(rows, account_name):
         .week-group .table-wrap {{ padding: 0 1rem 1rem; }}
         .calendar-card {{ background: var(--card); border: 1px solid var(--line); margin: 1rem 0; padding: 1rem; }}
         .calendar-card h3 {{ border-bottom: 1px solid var(--line); padding-bottom: 0.8rem; }}
+        .long-run {{ background: var(--card); border: 1px solid var(--accent); margin: 1rem 0; padding: 0 1rem; }}
+        .long-run summary {{ cursor: pointer; font-family: "Space Grotesk", sans-serif; font-size: 1.15rem; font-weight: 600; list-style-position: inside; padding: 1rem 0; }}
+        .long-run[open] summary {{ border-bottom: 1px solid var(--line); }}
+        .long-run-grid {{ background: var(--accent-soft); border: 1px solid var(--accent); display: grid; gap: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 1rem; padding: 0.45rem; }}
+        .long-run-grid div {{ border-left: 1px solid rgba(239, 101, 70, 0.35); padding: 0.55rem 0.7rem; }}
+        .long-run-grid div:first-child {{ border-left: 0; }}
+        .long-run-grid dt {{ color: var(--muted); font: 0.68rem Arial, sans-serif; text-transform: uppercase; }}
+        .long-run-grid dd {{ font-size: 1rem; margin: 0.2rem 0 0; text-align: left; }}
+        .long-run-map-shell {{ border-top: 1px solid var(--line); margin: 0 -1rem; padding: 1rem; position: relative; }}
+        .long-run-map-actions {{ display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }}
+        .long-run-map-actions button {{ background: var(--paper); border: 1px solid var(--ink); color: var(--ink); cursor: pointer; font: 600 0.68rem "DM Sans", sans-serif; padding: 0.35rem 0.55rem; }}
+        .long-run-map-actions button:hover {{ background: var(--ink); color: var(--paper); }}
+        .long-run-map {{ height: 19rem; min-height: 19rem; width: 100%; }}
+        .long-run-map-key {{ background: rgba(251, 250, 245, 0.94); border: 1px solid var(--line); bottom: 1.5rem; display: flex; flex-wrap: wrap; font: 0.68rem Arial, sans-serif; gap: 0.75rem; padding: 0.45rem 0.6rem; position: absolute; right: 1.5rem; z-index: 500; }}
+        .long-run-map-key span {{ align-items: center; display: inline-flex; gap: 0.3rem; }}
+        .long-run-map-key i {{ display: inline-block; height: 0.55rem; width: 1rem; }}
+        .route-key {{ background: var(--accent); height: 0.2rem !important; }}
+        .runner-key {{ background: var(--accent); border: 2px solid var(--ink); border-radius: 50%; height: 0.6rem !important; width: 0.6rem !important; }}
+        .runner-marker {{ align-items: center; border: 2px solid var(--ink); border-radius: 50%; color: var(--paper); display: flex !important; font: 700 0.72rem/1 "Space Grotesk", sans-serif; height: 28px !important; justify-content: center; width: 28px !important; }}
+        .runner-marker-manga {{ background: var(--teal); }}
+        .runner-marker-chips {{ background: #3d6fb6; }}
+        .runner-marker-shadow {{ opacity: 0.42; }}
+        .runner-key-manga {{ background: var(--teal); }}
+        .runner-key-chips {{ background: #3d6fb6; }}
+        .runner-key-shadow {{ background: #68706b; opacity: 0.55; }}
+        .leaflet-control-layers {{ border: 1px solid var(--ink) !important; border-radius: 0 !important; font: 0.72rem Arial, sans-serif; }}
         .calendar-grid {{ display: grid; gap: 0.6rem; grid-template-columns: repeat(7, minmax(0, 1fr)); }}
         .calendar-day {{ background: var(--card); border: 1px solid var(--line); min-height: 8.5rem; padding: 0.6rem; }}
         .calendar-day h4 {{ border-bottom: 1px solid var(--line); font: 600 0.8rem "Space Grotesk", sans-serif; margin: 0 0 0.6rem; padding-bottom: 0.45rem; }}
@@ -345,6 +551,10 @@ def _render_single_user(rows, account_name):
             .section-heading {{ align-items: start; flex-direction: column; gap: 0.35rem; }}
             .summary-card {{ padding: 1rem; }}
             .week-section {{ margin-left: -0.25rem; margin-right: -0.25rem; padding: 0.75rem; }}
+            .long-run-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            .long-run-grid div:nth-child(3) {{ border-left: 0; border-top: 1px solid rgba(239, 101, 70, 0.35); }}
+            .long-run-grid div:nth-child(4) {{ border-top: 1px solid rgba(239, 101, 70, 0.35); }}
+            .long-run-map {{ height: 15rem; min-height: 15rem; }}
             .calendar-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
             .calendar-day {{ min-height: 7rem; padding: 0.5rem; }}
             .calendar-day h4 {{ font-size: 0.72rem; }}
@@ -352,6 +562,7 @@ def _render_single_user(rows, account_name):
             .calendar-total small {{ margin-left: 0.4rem; }}
         }}
   </style>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
     <main class="page">
@@ -378,8 +589,33 @@ def render(rows):
                 account_name = row[0] or "manga"
                 rows_by_account.setdefault(account_name, []).append(row[1:])
 
+        epoch = date(2026, 9, 15)
+        today = date.today()
+        completed_by_account = {
+            account_name: sum(
+                float(row[1] or 0)
+                for row in account_rows
+                if epoch <= row[0] <= today
+            )
+            for account_name, account_rows in rows_by_account.items()
+        }
+        yesterday = today - timedelta(days=1)
+        completed_by_account_yesterday = {
+            account_name: sum(
+                float(row[1] or 0)
+                for row in account_rows
+                if epoch <= row[0] <= yesterday
+            )
+            for account_name, account_rows in rows_by_account.items()
+        }
+
         documents = [
-                _render_single_user(account_rows, account_name)
+            _render_single_user(
+                account_rows,
+                account_name,
+                completed_by_account,
+                completed_by_account_yesterday,
+            )
                 for account_name, account_rows in rows_by_account.items()
         ]
         first_document = documents[0]
@@ -415,6 +651,11 @@ def render(rows):
             });
             document.querySelectorAll('.user-panel').forEach((panel) => {
                 panel.classList.toggle('hidden', panel.dataset.account !== account);
+                if (panel.dataset.account === account) {
+                    panel.querySelectorAll('.long-run-map').forEach((element) => {
+                        if (element._leafletMap) element._leafletMap.invalidateSize();
+                    });
+                }
             });
         });
     });
