@@ -2,5 +2,6 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 .env
+.env.example
 .venv/
 site/index.html
