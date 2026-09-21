@@ -85,6 +85,16 @@ The **Strength progress pyramid** is a 16-layer white pyramid with a black borde
 
 This is intentionally a maintenance rhythm rather than a pass/fail score. Returning to strength training always starts building the pyramid again.
 
+## Two-Week Pick-and-Mix Workout Block
+
+[site/program.html](site/program.html) is a standalone, client-side page (not touched by `build_report.py`) where a logged-in user can plan and save a two-week block of workouts directly to Supabase. It uses Supabase Auth (email magic link) and the Supabase JS client only — no build step or server code.
+
+Setup required in Supabase, done once via the dashboard/SQL editor:
+
+1. Run the `program_blocks` table and RLS policies at the bottom of `schema.sql` in the Supabase SQL editor.
+2. In Supabase Auth settings, enable the Email provider and add your GitHub Pages URL to the Site URL and Redirect URLs.
+3. In `site/program.html`, set `SUPABASE_URL` and `SUPABASE_ANON_KEY` to your project's values. The anon key is safe to expose client-side; access is enforced entirely by RLS. Never put a `service_role` key in this file.
+
 ## Run notebook
 
 ```bash

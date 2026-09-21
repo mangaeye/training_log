@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two-Week Pick-and-Mix Workout Block</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+    :root {
+        color-scheme: light;
+        --ink: #171b19;
+        --muted: #68706b;
+        --line: #cfd1c6;
+        --paper: #f1eee5;
+        --card: #fbfaf5;
+        --accent: #ef6546;
+        --teal: #1b6c68;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--ink); color: var(--ink); font-family: "DM Sans", sans-serif; line-height: 1.45; margin: 0; }
+    .page { background: var(--paper); max-width: 720px; margin: 0 auto; min-height: 100vh; padding: clamp(1.5rem, 4vw, 3rem); }
+    h1 { font-family: "Space Grotesk", sans-serif; font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 600; margin: 0 0 1.5rem; }
+    h2 { font-family: "Space Grotesk", sans-serif; font-size: 1.15rem; font-weight: 600; margin: 0 0 0.8rem; }
+    section { background: var(--card); border: 1px solid var(--line); margin-bottom: 1.5rem; padding: 1.25rem; }
+    label { display: block; font: 600 0.72rem Arial, sans-serif; letter-spacing: 0.04em; margin-bottom: 0.3rem; text-transform: uppercase; color: var(--muted); }
+    input[type="email"], input[type="date"], input[type="text"] {
+        background: #fff; border: 1px solid var(--line); font: 0.95rem "DM Sans", sans-serif; padding: 0.5rem 0.6rem; width: 100%;
+    }
+    .field { margin-bottom: 0.9rem; }
+    .toggle-row { align-items: center; display: flex; gap: 0.5rem; }
+    button {
+        background: var(--ink); border: 1px solid var(--ink); color: var(--paper); cursor: pointer;
+        font: 600 0.85rem "DM Sans", sans-serif; padding: 0.55rem 1rem;
+    }
+    button:hover { background: var(--accent); border-color: var(--accent); }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+    button.secondary { background: transparent; color: var(--ink); }
+    button.secondary:hover { background: var(--line); border-color: var(--line); color: var(--ink); }
+    .hidden { display: none !important; }
+    .workout-form { display: grid; gap: 0.7rem; grid-template-columns: repeat(2, 1fr); margin-bottom: 1rem; }
+    .workout-list { list-style: none; margin: 0 0 1rem; padding: 0; }
+    .workout-item {
+        align-items: center; background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--teal);
+        display: flex; gap: 0.6rem; justify-content: space-between; margin-bottom: 0.5rem; padding: 0.6rem 0.75rem;
+    }
+    .workout-item .details { font-size: 0.85rem; }
+    .workout-item .details strong { display: block; font-size: 0.95rem; }
+    .workout-item button { background: transparent; border: none; color: var(--muted); font-size: 0.72rem; padding: 0.2rem 0.4rem; text-decoration: underline; }
+    .workout-item button:hover { background: transparent; color: var(--accent); }
+    .status { color: var(--muted); font-size: 0.8rem; margin-top: 0.6rem; min-height: 1.1em; }
+    .status.error { color: #b23a2e; }
+    .status.success { color: var(--teal); }
+    .actions { display: flex; gap: 0.6rem; }
+    .top-nav { margin-bottom: 1rem; }
+    .top-nav a { color: var(--ink); font: 600 0.8rem "DM Sans", sans-serif; text-decoration: none; }
+    .top-nav a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+<main class="page">
+    <p class="top-nav"><a href="index.html">&larr; Back to training log</a></p>
+    <h1>Two-Week Pick-and-Mix Workout Block</h1>
+
+    <!-- Fill in your Supabase project URL and anon (public) key below.
+         The anon key is safe to expose client-side; access is enforced by
+         Row Level Security policies on the program_blocks table (see schema.sql).
+         Never put a service_role key in this file. -->
+    <script>
+        const SUPABASE_URL = "https://skwxshllgputbezvokmf.supabase.co";
+        const SUPABASE_ANON_KEY = "sb_publishable_hYt_-HqXz06xNz4cS2XrHQ_xTZsGbqk";
+    </script>
+
+    <section id="login-section">
+        <h2>Log in</h2>
+        <div class="field">
+            <label for="email-input">Email</label>
+            <input type="email" id="email-input" placeholder="you@example.com" autocomplete="email">
+        </div>
+        <button id="send-link-button">Send Magic Link</button>
+        <p class="status" id="login-status"></p>
+    </section>
+
+    <section id="editor-section" class="hidden">
+        <h2>Workout block</h2>
+        <div class="field">
+            <label for="start-date-input">Start date</label>
+            <input type="date" id="start-date-input">
+        </div>
+
+        <h2>Add a workout</h2>
+        <div class="workout-form">
+            <div class="field">
+                <label for="workout-type-input">Type</label>
+                <input type="text" id="workout-type-input" placeholder="Easy run">
+            </div>
+            <div class="field">
+                <label for="workout-duration-input">Duration / km</label>
+                <input type="text" id="workout-duration-input" placeholder="45 min or 8 km">
+            </div>
+            <div class="field">
+                <label for="workout-intensity-input">Intensity</label>
+                <input type="text" id="workout-intensity-input" placeholder="Zone 2">
+            </div>
+            <div class="field">
+                <span>Strides</span>
+                <div class="toggle-row">
+                    <input type="checkbox" id="workout-strides-input">
+                    <label for="workout-strides-input" style="margin: 0; text-transform: none; font-weight: 400;">Include strides</label>
+                </div>
+            </div>
+        </div>
+        <button id="add-workout-button" class="secondary">Add Workout</button>
+
+        <h2 style="margin-top: 1.25rem;">Workouts in this block</h2>
+        <ul class="workout-list" id="workout-list"></ul>
+
+        <div class="actions">
+            <button id="save-block-button">Save Block</button>
+        </div>
+        <p class="status" id="editor-status"></p>
+    </section>
+
+    <p class="status" id="auth-status">Checking session…</p>
+</main>
+
+<script type="module">
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+    const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const loginSection = document.getElementById("login-section");
+    const editorSection = document.getElementById("editor-section");
+    const authStatus = document.getElementById("auth-status");
+    const loginStatus = document.getElementById("login-status");
+    const editorStatus = document.getElementById("editor-status");
+    const emailInput = document.getElementById("email-input");
+    const sendLinkButton = document.getElementById("send-link-button");
+    const startDateInput = document.getElementById("start-date-input");
+    const workoutTypeInput = document.getElementById("workout-type-input");
+    const workoutDurationInput = document.getElementById("workout-duration-input");
+    const workoutIntensityInput = document.getElementById("workout-intensity-input");
+    const workoutStridesInput = document.getElementById("workout-strides-input");
+    const addWorkoutButton = document.getElementById("add-workout-button");
+    const workoutList = document.getElementById("workout-list");
+    const saveBlockButton = document.getElementById("save-block-button");
+
+    let currentWorkouts = [];
+
+    function setStatus(element, message, kind) {
+        element.textContent = message || "";
+        element.className = "status" + (kind ? ` ${kind}` : "");
+    }
+
+    async function login(email) {
+        setStatus(loginStatus, "Sending magic link…");
+        const { error } = await supabaseClient.auth.signInWithOtp({
+            email,
+            options: { emailRedirectTo: window.location.href },
+        });
+        if (error) {
+            setStatus(loginStatus, error.message, "error");
+            return;
+        }
+        setStatus(loginStatus, "Check your email for the login link.", "success");
+    }
+
+    function renderWorkoutList() {
+        workoutList.innerHTML = "";
+        currentWorkouts.forEach((workout, index) => {
+            const item = document.createElement("li");
+            item.className = "workout-item";
+            item.innerHTML = `
+                <div class="details">
+                    <strong>${escapeHtml(workout.type)}</strong>
+                    ${escapeHtml(workout.duration)} · ${escapeHtml(workout.intensity)}${workout.strides ? " · strides" : ""}
+                </div>
+                <button type="button" data-index="${index}">Remove</button>
+            `;
+            item.querySelector("button").addEventListener("click", () => {
+                currentWorkouts.splice(index, 1);
+                renderWorkoutList();
+            });
+            workoutList.appendChild(item);
+        });
+    }
+
+    function escapeHtml(value) {
+        const div = document.createElement("div");
+        div.textContent = value || "";
+        return div.innerHTML;
+    }
+
+    function addWorkoutFromForm() {
+        const type = workoutTypeInput.value.trim();
+        const duration = workoutDurationInput.value.trim();
+        const intensity = workoutIntensityInput.value.trim();
+        if (!type || !duration) {
+            setStatus(editorStatus, "Type and duration are required.", "error");
+            return;
+        }
+        currentWorkouts.push({
+            type,
+            duration,
+            intensity,
+            strides: workoutStridesInput.checked,
+        });
+        workoutTypeInput.value = "";
+        workoutDurationInput.value = "";
+        workoutIntensityInput.value = "";
+        workoutStridesInput.checked = false;
+        setStatus(editorStatus, "");
+        renderWorkoutList();
+    }
+
+    async function getCurrentUserId() {
+        const { data, error } = await supabaseClient.auth.getUser();
+        if (error || !data.user) return null;
+        return data.user.id;
+    }
+
+    async function saveBlock(startDate, workouts) {
+        const userId = await getCurrentUserId();
+        if (!userId) {
+            setStatus(editorStatus, "You must be logged in to save.", "error");
+            return;
+        }
+        if (!startDate) {
+            setStatus(editorStatus, "Choose a start date first.", "error");
+            return;
+        }
+        setStatus(editorStatus, "Saving…");
+        const { error } = await supabaseClient
+            .from("program_blocks")
+            .upsert(
+                { user_id: userId, start_date: startDate, workouts },
+                { onConflict: "user_id,start_date" }
+            );
+        if (error) {
+            setStatus(editorStatus, error.message, "error");
+            return;
+        }
+        setStatus(editorStatus, "Block saved.", "success");
+    }
+
+    async function loadBlock(startDate) {
+        const userId = await getCurrentUserId();
+        if (!userId || !startDate) {
+            currentWorkouts = [];
+            renderWorkoutList();
+            return;
+        }
+        setStatus(editorStatus, "Loading…");
+        const { data, error } = await supabaseClient
+            .from("program_blocks")
+            .select("workouts")
+            .eq("user_id", userId)
+            .eq("start_date", startDate)
+            .maybeSingle();
+        if (error) {
+            setStatus(editorStatus, error.message, "error");
+            return;
+        }
+        currentWorkouts = (data && data.workouts) || [];
+        renderWorkoutList();
+        setStatus(editorStatus, data ? "Loaded existing block." : "No block saved for this date yet.");
+    }
+
+    function showLoggedInUi(isLoggedIn) {
+        loginSection.classList.toggle("hidden", isLoggedIn);
+        editorSection.classList.toggle("hidden", !isLoggedIn);
+    }
+
+    async function refreshSessionUi() {
+        const { data } = await supabaseClient.auth.getSession();
+        const isLoggedIn = Boolean(data.session);
+        showLoggedInUi(isLoggedIn);
+        setStatus(authStatus, isLoggedIn ? "" : "Log in to view or edit your workout block.");
+        if (isLoggedIn && startDateInput.value) {
+            await loadBlock(startDateInput.value);
+        }
+    }
+
+    sendLinkButton.addEventListener("click", () => {
+        const email = emailInput.value.trim();
+        if (!email) {
+            setStatus(loginStatus, "Enter an email address.", "error");
+            return;
+        }
+        login(email);
+    });
+
+    addWorkoutButton.addEventListener("click", addWorkoutFromForm);
+    saveBlockButton.addEventListener("click", () => saveBlock(startDateInput.value, currentWorkouts));
+    startDateInput.addEventListener("change", () => loadBlock(startDateInput.value));
+
+    supabaseClient.auth.onAuthStateChange((_event, _session) => {
+        refreshSessionUi();
+    });
+
+    refreshSessionUi();
+</script>
+</body>
+</html>

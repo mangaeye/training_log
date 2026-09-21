@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg2
 
-from report_config import GOAL_CARD_VIEWS, INTENSITY_GOAL_MINUTES
+from report_config import GOAL_CARD_VIEWS, INTENSITY_GOAL_MINUTES, LONG_RUN_EPOCH
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "site" / "index.html"
@@ -36,6 +36,7 @@ STRENGTH_CADENCE_DAYS = 4
 HEALING_SESSION_COUNT = 2
 STRENGTH_PYRAMID_SEGMENTS = 16
 STRENGTH_PYRAMID_KEEP_DAYS = 6
+MAX_HISTORY_WEEKS = 6
 REPORT_TIMEZONE = ZoneInfo("Australia/Melbourne")
 
 
@@ -153,7 +154,7 @@ def sampled_route(points, maximum_points=1200):
 def long_run_markup(
     rows, today, account_name, completed_by_account, completed_by_account_yesterday
 ):
-    epoch = date(2026, 9, 15)
+    epoch = LONG_RUN_EPOCH
     route_points = route_coordinates()
     total_race_distance = route_distance_meters(route_points)
     completed_rows = [row for row in rows if epoch <= row[0] <= today]
@@ -861,9 +862,10 @@ def _render_single_user(
     for row in rows:
         monday = row[0] - timedelta(days=row[0].weekday())
         grouped.setdefault(monday, []).append(row)
+    grouped.pop(current_monday, None)
 
     sections = []
-    for monday, week_rows in grouped.items():
+    for monday in list(grouped)[:MAX_HISTORY_WEEKS]:
         label = week_label(monday)
         week_end = monday + timedelta(days=6)
         totals = period_totals(rows, monday, week_end)
@@ -926,7 +928,9 @@ def _render_single_user(
             margin: 0;
         }}
         .page {{ background: var(--paper); max-width: 1180px; margin: 0 auto; min-height: 100vh; padding: clamp(1.5rem, 4vw, 4rem) clamp(1rem, 4vw, 2.5rem); }}
-        header {{ border-bottom: 2px solid var(--ink); margin-bottom: 2.8rem; padding-bottom: 2rem; }}
+        header {{ border-bottom: 2px solid var(--ink); margin-bottom: 2.8rem; padding-bottom: 2rem; position: relative; }}
+        .program-link {{ background: var(--ink); color: var(--paper); font: 600 0.78rem "DM Sans", sans-serif; padding: 0.45rem 0.8rem; position: absolute; right: 0; text-decoration: none; top: 0; }}
+        .program-link:hover {{ background: var(--accent); }}
         .eyebrow {{ color: var(--accent); font: 700 0.72rem/1.2 Arial, sans-serif; letter-spacing: 0.16em; margin: 0 0 0.85rem; text-transform: uppercase; }}
         h1 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(2rem, 5vw, 4rem); font-weight: 600; letter-spacing: -0.055em; line-height: 0.92; margin: 0; max-width: 12ch; }}
         h2 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(1.5rem, 3vw, 2.2rem); font-weight: 600; margin: 0; }}
@@ -1069,6 +1073,7 @@ def _render_single_user(
     <main class="page">
         <header>
             <p class="eyebrow">Training Log · {html.escape(account_name)}</p>
+            <a class="program-link" href="program.html">Workout block &rarr;</a>
             <h1>Training Log</h1>
             <p class="updated">{html.escape(generated)}</p>
         </header>
@@ -1095,7 +1100,7 @@ def render(rows, generated_at=None):
                 account_name = row[0] or "manga"
                 rows_by_account.setdefault(account_name, []).append(row[1:])
 
-        epoch = date(2026, 9, 15)
+        epoch = LONG_RUN_EPOCH
         today = generated_at.date()
         completed_by_account = {
             account_name: sum(

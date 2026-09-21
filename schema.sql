@@ -124,3 +124,34 @@ VALUES
     ('yoga', 'wellness'),
     ('other', 'other')
 ON CONFLICT (name) DO NOTHING;
+
+-- Two-week pick-and-mix workout blocks, edited client-side via Supabase Auth.
+CREATE TABLE IF NOT EXISTS program_blocks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    start_date DATE NOT NULL,
+    workouts JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, start_date)
+);
+
+ALTER TABLE program_blocks ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view their own program blocks" ON program_blocks;
+CREATE POLICY "Users can view their own program blocks"
+    ON program_blocks FOR SELECT
+    USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can insert their own program blocks" ON program_blocks;
+CREATE POLICY "Users can insert their own program blocks"
+    ON program_blocks FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update their own program blocks" ON program_blocks;
+CREATE POLICY "Users can update their own program blocks"
+    ON program_blocks FOR UPDATE
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX IF NOT EXISTS idx_program_blocks_user_start_date
+    ON program_blocks(user_id, start_date);
