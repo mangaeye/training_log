@@ -87,7 +87,11 @@ This is intentionally a maintenance rhythm rather than a pass/fail score. Return
 
 ## Two-Week Pick-and-Mix Workout Block
 
-[site/program.html](site/program.html) is a standalone, client-side page (not touched by `build_report.py`) where a logged-in user can plan and save a two-week block of workouts directly to Supabase. It uses Supabase Auth (email magic link) and the Supabase JS client only — no build step or server code.
+[site/program.html](site/program.html) is a standalone, client-side page (not touched by `build_report.py`) where a logged-in user can plan and save a flexible-length block of workouts directly to Supabase. It uses Supabase Auth (email magic link) and the Supabase JS client only — no build step or server code.
+
+Each workout has a completed checkbox; ticking it dims that row in both the editable list and the summary card. This is stored as a `completed` key on the workout object inside the `workouts` JSONB array, so it needs no schema change — the column is already schema-less JSON.
+
+The block's length is a separate `duration_weeks` column (default 2) so a block can cover one week, two weeks, or any other span; this does require a schema change, included below.
 
 Setup required in Supabase, done once via the dashboard/SQL editor:
 

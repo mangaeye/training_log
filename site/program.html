@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Two-Week Pick-and-Mix Workout Block</title>
+<title>Pick-and-Mix Workout Block</title>
 <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
     :root {
@@ -47,6 +47,9 @@
     .workout-item .details strong { display: block; font-size: 0.95rem; }
     .workout-item button { background: transparent; border: none; color: var(--muted); font-size: 0.72rem; padding: 0.2rem 0.4rem; text-decoration: underline; }
     .workout-item button:hover { background: transparent; color: var(--accent); }
+    .workout-item.completed { opacity: 0.5; }
+    .workout-item.completed .details strong { text-decoration: line-through; }
+    .workout-item .item-main { align-items: center; display: flex; gap: 0.6rem; }
     .status { color: var(--muted); font-size: 0.8rem; margin-top: 0.6rem; min-height: 1.1em; }
     .status.error { color: #b23a2e; }
     .status.success { color: var(--teal); }
@@ -54,12 +57,18 @@
     .top-nav { margin-bottom: 1rem; }
     .top-nav a { color: var(--ink); font: 600 0.8rem "DM Sans", sans-serif; text-decoration: none; }
     .top-nav a:hover { color: var(--accent); }
+    .intensity-table { border-collapse: collapse; width: 100%; }
+    .intensity-table th { border-bottom: 1px solid var(--line); color: var(--muted); font: 700 0.68rem Arial, sans-serif; letter-spacing: 0.05em; padding: 0.4rem 0.5rem; text-align: left; text-transform: uppercase; }
+    .intensity-table td { border-bottom: 1px solid var(--line); font-size: 0.85rem; padding: 0.5rem; }
+    .intensity-table tr:last-child td { border-bottom: 0; }
+    .intensity-table tr.completed td { opacity: 0.5; text-decoration: line-through; }
+    .intensity-dot { border-radius: 50%; display: inline-block; height: 0.55rem; margin-right: 0.4rem; width: 0.55rem; }
 </style>
 </head>
 <body>
 <main class="page">
     <p class="top-nav"><a href="index.html">&larr; Back to training log</a></p>
-    <h1>Two-Week Pick-and-Mix Workout Block</h1>
+    <h1>Pick-and-Mix Workout Block</h1>
 
     <!-- Fill in your Supabase project URL and anon (public) key below.
          The anon key is safe to expose client-side; access is enforced by
@@ -85,6 +94,10 @@
         <div class="field">
             <label for="start-date-input">Start date</label>
             <input type="date" id="start-date-input">
+        </div>
+        <div class="field">
+            <label for="duration-weeks-input">Duration (weeks)</label>
+            <input type="text" inputmode="numeric" id="duration-weeks-input" value="2" placeholder="e.g. 1, 2, 4">
         </div>
 
         <h2>Add a workout</h2>
@@ -120,6 +133,16 @@
         <p class="status" id="editor-status"></p>
     </section>
 
+    <section id="block-card-section" class="hidden">
+        <h2>Workout block card</h2>
+        <table class="intensity-table">
+            <thead>
+                <tr><th>Type</th><th>Duration / km</th><th>Intensity</th><th>Strides</th></tr>
+            </thead>
+            <tbody id="block-card-body"></tbody>
+        </table>
+    </section>
+
     <p class="status" id="auth-status">Checking session…</p>
 </main>
 
@@ -140,9 +163,12 @@
     const workoutDurationInput = document.getElementById("workout-duration-input");
     const workoutIntensityInput = document.getElementById("workout-intensity-input");
     const workoutStridesInput = document.getElementById("workout-strides-input");
+    const durationWeeksInput = document.getElementById("duration-weeks-input");
     const addWorkoutButton = document.getElementById("add-workout-button");
     const workoutList = document.getElementById("workout-list");
     const saveBlockButton = document.getElementById("save-block-button");
+    const blockCardSection = document.getElementById("block-card-section");
+    const blockCardBody = document.getElementById("block-card-body");
 
     let currentWorkouts = [];
 
@@ -164,24 +190,61 @@
         setStatus(loginStatus, "Check your email for the login link.", "success");
     }
 
+    // Matches the color scheme used by the intensity pyramid on the training log page.
+    function intensityColor(intensity) {
+        const value = (intensity || "").toLowerCase();
+        if (/vo2|above threshold|max/.test(value)) return "#a53f30";
+        if (/threshold/.test(value)) return "#d2691e";
+        if (/tempo/.test(value)) return "#e0a545";
+        if (/easy|zone ?1|zone ?2|recovery/.test(value)) return "#3f8f7a";
+        return "#9aa39c";
+    }
+
+    function renderBlockCard() {
+        if (!currentWorkouts.length) {
+            blockCardSection.classList.add("hidden");
+            blockCardBody.innerHTML = "";
+            return;
+        }
+        blockCardSection.classList.remove("hidden");
+        blockCardBody.innerHTML = currentWorkouts.map((workout) => {
+            const color = intensityColor(workout.intensity);
+            return `<tr class="${workout.completed ? "completed" : ""}" style="border-left: 3px solid ${color};">
+                <td>${escapeHtml(workout.type)}</td>
+                <td>${escapeHtml(workout.duration)}</td>
+                <td><span class="intensity-dot" style="background: ${color};"></span>${escapeHtml(workout.intensity)}</td>
+                <td>${workout.strides ? "Yes" : "—"}</td>
+            </tr>`;
+        }).join("");
+    }
+
     function renderWorkoutList() {
         workoutList.innerHTML = "";
         currentWorkouts.forEach((workout, index) => {
             const item = document.createElement("li");
-            item.className = "workout-item";
+            item.className = "workout-item" + (workout.completed ? " completed" : "");
             item.innerHTML = `
-                <div class="details">
-                    <strong>${escapeHtml(workout.type)}</strong>
-                    ${escapeHtml(workout.duration)} · ${escapeHtml(workout.intensity)}${workout.strides ? " · strides" : ""}
+                <div class="item-main">
+                    <input type="checkbox" data-role="completed" ${workout.completed ? "checked" : ""} aria-label="Mark workout completed">
+                    <div class="details">
+                        <strong>${escapeHtml(workout.type)}</strong>
+                        ${escapeHtml(workout.duration)} · ${escapeHtml(workout.intensity)}${workout.strides ? " · strides" : ""}
+                    </div>
                 </div>
                 <button type="button" data-index="${index}">Remove</button>
             `;
+            item.querySelector('[data-role="completed"]').addEventListener("change", (event) => {
+                workout.completed = event.target.checked;
+                renderWorkoutList();
+            });
             item.querySelector("button").addEventListener("click", () => {
                 currentWorkouts.splice(index, 1);
                 renderWorkoutList();
+                renderBlockCard();
             });
             workoutList.appendChild(item);
         });
+        renderBlockCard();
     }
 
     function escapeHtml(value) {
@@ -203,6 +266,7 @@
             duration,
             intensity,
             strides: workoutStridesInput.checked,
+            completed: false,
         });
         workoutTypeInput.value = "";
         workoutDurationInput.value = "";
@@ -218,7 +282,7 @@
         return data.user.id;
     }
 
-    async function saveBlock(startDate, workouts) {
+    async function saveBlock(startDate, workouts, durationWeeks) {
         const userId = await getCurrentUserId();
         if (!userId) {
             setStatus(editorStatus, "You must be logged in to save.", "error");
@@ -228,11 +292,17 @@
             setStatus(editorStatus, "Choose a start date first.", "error");
             return;
         }
+        const weeks = parseInt(durationWeeks, 10);
         setStatus(editorStatus, "Saving…");
         const { error } = await supabaseClient
             .from("program_blocks")
             .upsert(
-                { user_id: userId, start_date: startDate, workouts },
+                {
+                    user_id: userId,
+                    start_date: startDate,
+                    duration_weeks: Number.isFinite(weeks) && weeks > 0 ? weeks : 2,
+                    workouts,
+                },
                 { onConflict: "user_id,start_date" }
             );
         if (error) {
@@ -252,7 +322,7 @@
         setStatus(editorStatus, "Loading…");
         const { data, error } = await supabaseClient
             .from("program_blocks")
-            .select("workouts")
+            .select("workouts, duration_weeks")
             .eq("user_id", userId)
             .eq("start_date", startDate)
             .maybeSingle();
@@ -261,6 +331,7 @@
             return;
         }
         currentWorkouts = (data && data.workouts) || [];
+        durationWeeksInput.value = data ? data.duration_weeks : 2;
         renderWorkoutList();
         setStatus(editorStatus, data ? "Loaded existing block." : "No block saved for this date yet.");
     }
@@ -290,7 +361,7 @@
     });
 
     addWorkoutButton.addEventListener("click", addWorkoutFromForm);
-    saveBlockButton.addEventListener("click", () => saveBlock(startDateInput.value, currentWorkouts));
+    saveBlockButton.addEventListener("click", () => saveBlock(startDateInput.value, currentWorkouts, durationWeeksInput.value));
     startDateInput.addEventListener("change", () => loadBlock(startDateInput.value));
 
     supabaseClient.auth.onAuthStateChange((_event, _session) => {

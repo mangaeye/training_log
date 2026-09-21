@@ -125,15 +125,20 @@ VALUES
     ('other', 'other')
 ON CONFLICT (name) DO NOTHING;
 
--- Two-week pick-and-mix workout blocks, edited client-side via Supabase Auth.
+-- Pick-and-mix workout blocks, edited client-side via Supabase Auth.
+-- duration_weeks lets a block cover any length (one week, two weeks, etc.).
 CREATE TABLE IF NOT EXISTS program_blocks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     start_date DATE NOT NULL,
+    duration_weeks INTEGER NOT NULL DEFAULT 2,
     workouts JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(user_id, start_date)
 );
+
+ALTER TABLE program_blocks
+    ADD COLUMN IF NOT EXISTS duration_weeks INTEGER NOT NULL DEFAULT 2;
 
 ALTER TABLE program_blocks ENABLE ROW LEVEL SECURITY;
 
