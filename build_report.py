@@ -233,6 +233,7 @@ def long_run_markup(
     return (
         "<details class=\"long-run\" open><summary>The Long Run</summary>"
         "<dl class=\"long-run-grid\">"
+        f"<div><dt>Start date</dt><dd>{epoch.strftime('%a %d %b %Y')}</dd></div>"
         f"<div><dt>Total race distance</dt><dd>{format_whole_distance(total_race_distance)} km</dd></div>"
         f"<div><dt>Km completed</dt><dd>{completed_value}</dd></div>"
         f"<div><dt>Days remaining</dt><dd>{days_remaining if days_remaining is not None else '-'} </dd></div>"
@@ -931,13 +932,6 @@ def _render_single_user(
         }}
         .page {{ background: var(--paper); max-width: 1180px; margin: 0 auto; min-height: 100vh; padding: clamp(1.5rem, 4vw, 4rem) clamp(1rem, 4vw, 2.5rem); }}
         header {{ border-bottom: 2px solid var(--ink); margin-bottom: 2.8rem; padding-bottom: 2rem; position: relative; }}
-        .program-link {{ background: var(--ink); color: var(--paper); font: 600 0.78rem "DM Sans", sans-serif; padding: 0.45rem 0.8rem; position: absolute; right: 0; text-decoration: none; top: 0; }}
-        .program-link:hover {{ background: var(--accent); }}
-        .auth-chip {{ align-items: center; background: var(--card); border: 1px solid var(--line); color: var(--muted); display: inline-flex; font: 600 0.72rem "DM Sans", sans-serif; gap: 0.4rem; margin: 0.75rem 0 0; padding: 0.4rem 0.6rem; }}
-        .auth-chip::before {{ background: var(--muted); border-radius: 50%; content: ""; height: 0.5rem; width: 0.5rem; }}
-        .auth-chip.signed-in {{ border-color: var(--teal); color: var(--teal); }}
-        .auth-chip.signed-in::before {{ background: var(--teal); }}
-        .auth-chip a {{ color: inherit; text-decoration: underline; }}
         .eyebrow {{ color: var(--accent); font: 700 0.72rem/1.2 Arial, sans-serif; letter-spacing: 0.16em; margin: 0 0 0.85rem; text-transform: uppercase; }}
         h1 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(2rem, 5vw, 4rem); font-weight: 600; letter-spacing: -0.055em; line-height: 0.92; margin: 0; max-width: 12ch; }}
         h2 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(1.5rem, 3vw, 2.2rem); font-weight: 600; margin: 0; }}
@@ -1002,7 +996,7 @@ def _render_single_user(
         .long-run {{ background: var(--card); border: 1px solid var(--accent); margin: 1rem 0; padding: 0 1rem; }}
         .long-run summary {{ cursor: pointer; font-family: "Space Grotesk", sans-serif; font-size: 1.15rem; font-weight: 600; list-style-position: inside; padding: 1rem 0; }}
         .long-run[open] summary {{ border-bottom: 1px solid var(--line); }}
-        .long-run-grid {{ background: #dcebef; border: 1px solid #4c8791; display: grid; gap: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 1rem; padding: 0.45rem; }}
+        .long-run-grid {{ background: #dcebef; border: 1px solid #4c8791; display: grid; gap: 0; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0 0 1rem; padding: 0.45rem; }}
         .long-run-grid div {{ border-left: 1px solid rgba(76, 135, 145, 0.4); padding: 0.55rem 0.7rem; }}
         .long-run-grid div:first-child {{ border-left: 0; }}
         .long-run-grid dt {{ color: var(--muted); font: 0.68rem Arial, sans-serif; text-transform: uppercase; }}
@@ -1075,37 +1069,12 @@ def _render_single_user(
         }}
   </style>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script type="module">
-        import {{ createClient }} from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-
-        const supabaseClient = createClient(
-            "https://skwxshllgputbezvokmf.supabase.co",
-            "sb_publishable_hYt_-HqXz06xNz4cS2XrHQ_xTZsGbqk"
-        );
-        const authChips = document.querySelectorAll(".auth-status");
-
-        async function renderAuthStatus() {{
-            const {{ data }} = await supabaseClient.auth.getSession();
-            const isSignedIn = Boolean(data.session);
-            authChips.forEach((authChip) => {{
-                authChip.classList.toggle("signed-in", isSignedIn);
-                authChip.innerHTML = isSignedIn
-                    ? 'Signed in - <a href="program.html">manage workout block</a>'
-                    : 'Not signed in - <a href="program.html">sign in to manage workout block</a>';
-            }});
-        }}
-
-        supabaseClient.auth.onAuthStateChange(renderAuthStatus);
-        renderAuthStatus();
-    </script>
 </head>
 <body>
     <main class="page">
         <header>
             <p class="eyebrow">Training Log · {html.escape(account_name)}</p>
-            <a class="program-link" href="program.html">Workout block &rarr;</a>
             <h1>Training Log</h1>
-            <p class="auth-chip auth-status">Checking sign-in…</p>
             <p class="updated">{html.escape(generated)}</p>
         </header>
         {summary}
