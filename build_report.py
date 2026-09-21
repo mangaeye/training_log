@@ -11,15 +11,24 @@ from zoneinfo import ZoneInfo
 
 import psycopg2
 
+from report_config import GOAL_CARD_VIEWS, INTENSITY_GOAL_MINUTES
+
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "site" / "index.html"
 ROUTE_KML = ROOT / "route.kml"
 KB_ICON = ROOT / "kb_icon.jpg"
 ACCOUNT_NAMES = ("manga", "chips")
-GOAL_CARD_VIEWS = {
-    "manga": ("weekly_run_minutes", "weekly_strength"),
-    "chips": ("weekly_run_count", "weekly_strength"),
-}
+# Zone stacks for the intensity pyramid: bottom stack fills up from the base,
+# top stack fills down from the apex. Each tuple is (label, color), ordered
+# from the stack's starting edge outward.
+INTENSITY_BOTTOM_STACK = (
+    ("Easy Running (Below VT1/LT1)", "#3f8f7a"),
+    ("Tempo Running", "#e0a545"),
+)
+INTENSITY_TOP_STACK = (
+    ("Above Threshold (VT2/LT2)", "#a53f30"),
+    ("Threshold Running", "#d2691e"),
+)
 TRAIL_DAYS = 28
 TRAIL_EPOCH = date(2026, 9, 15)
 RUN_CADENCE_DAYS = 2
@@ -303,6 +312,34 @@ def weekly_run_goal_markup(rows, today):
     )
 
 
+def two_week_run_goal_markup(rows, today):
+    week_start = today - timedelta(days=today.weekday())
+    two_week_start = week_start - timedelta(days=7)
+    runs_completed = sum(
+        int(row[3] or 0)
+        for row in rows
+        if two_week_start <= row[0] <= today
+    )
+    goal = 7
+    progress = min(runs_completed / goal, 1)
+    remaining = max(goal - runs_completed, 0)
+    message = (
+        "Goal complete - strong fortnight!"
+        if runs_completed >= goal
+        else f"{remaining} more run{'s' if remaining != 1 else ''} to reach your goal"
+    )
+    return (
+        '<article class="summary-card goal-card">'
+        "<h3>Two week run goal</h3>"
+        f"<p class=\"goal-count\"><strong>{runs_completed}</strong> / {goal} runs</p>"
+        f"<div class=\"goal-track\" role=\"progressbar\" aria-label=\"Two week run goal\" "
+        f"aria-valuenow=\"{min(runs_completed, goal)}\" aria-valuemin=\"0\" aria-valuemax=\"{goal}\">"
+        f"<span style=\"width: {progress:.0%}\"></span></div>"
+        f"<p class=\"goal-message\">{message}</p>"
+        "</article>"
+    )
+
+
 def weekly_run_minutes_goal_markup(rows, today):
     week_start = today - timedelta(days=today.weekday())
     minutes_completed = int(
@@ -370,13 +407,196 @@ def weekly_strength_goal_markup(rows, today):
 def goal_cards_markup(rows, today, account_name):
     card_builders = {
         "weekly_run_count": weekly_run_goal_markup,
+        "two_week_run_count": two_week_run_goal_markup,
         "weekly_run_minutes": weekly_run_minutes_goal_markup,
         "weekly_strength": weekly_strength_goal_markup,
+        "weekly_intensity": weekly_intensity_markup,
     }
     return [
         card_builders[view](rows, today)
         for view in GOAL_CARD_VIEWS.get(account_name, ())
     ]
+
+
+def intensity_grid_rows(goal_minutes):
+    """Rows top (apex) to bottom (base). A triangle subdivided into n equal
+    rows always has n**2 small triangles, so n is the closest fit to the
+    configured goal; row i (1-indexed from the apex) holds 2i-1 triangles.
+    """
+    row_count = max(1, round(math.sqrt(goal_minutes))) if goal_minutes else 1
+    rows = []
+    for index in range(1, row_count + 1):
+        rows.append(
+            {
+                "y_top": (index - 1) / row_count * 100,
+                "y_bottom": index / row_count * 100,
+                "capacity": 2 * index - 1,
+            }
+        )
+    return rows, row_count * row_count
+
+
+def intensity_zigzag_lines(row_index, row_count):
+    y_top = (row_index - 1) / row_count * 100
+    y_bottom = row_index / row_count * 100
+    half_top = y_top / 2
+    half_bottom = y_bottom / 2
+    bottom_points = [
+        (50 - half_bottom + step * (2 * half_bottom / row_index), y_bottom)
+        for step in range(row_index + 1)
+    ]
+    top_points = (
+        [(50 - half_top + step * (2 * half_top / (row_index - 1)), y_top) for step in range(row_index)]
+        if row_index > 1
+        else [(50.0, y_top)]
+    )
+    lines = []
+    for step, (tx, ty) in enumerate(top_points):
+        bx1, by1 = bottom_points[step]
+        bx2, by2 = bottom_points[step + 1]
+        lines.append((tx, ty, bx1, by1))
+        lines.append((tx, ty, bx2, by2))
+    return lines
+
+
+def allocate_intensity_stack(rows, stack_minutes):
+    """Assign each stack zone's minutes to row capacity, one small triangle
+    per minute, starting from rows[0] and consuming remaining capacity."""
+    allocations = [[] for _ in rows]
+    remaining_by_zone = list(stack_minutes)
+    for row_position, row in enumerate(rows):
+        capacity_left = row["capacity"]
+        for zone_index, remaining in enumerate(remaining_by_zone):
+            if capacity_left <= 0 or remaining <= 0:
+                continue
+            used = min(remaining, capacity_left)
+            allocations[row_position].append((zone_index, used))
+            remaining_by_zone[zone_index] -= used
+            capacity_left -= used
+    return allocations
+
+
+def intensity_trapezoid_points(y_top, y_bottom):
+    half_top = y_top / 2
+    half_bottom = y_bottom / 2
+    return (
+        f"{50 - half_top:.2f},{y_top:.2f} {50 + half_top:.2f},{y_top:.2f} "
+        f"{50 + half_bottom:.2f},{y_bottom:.2f} {50 - half_bottom:.2f},{y_bottom:.2f}"
+    )
+
+
+def weekly_intensity_markup(rows, today):
+    week_start = today - timedelta(days=today.weekday())
+    minutes_completed = int(
+        (
+            sum(
+                float(row[5] or 0)
+                for row in rows
+                if week_start <= row[0] <= today
+            )
+            + 30
+        )
+        // 60
+    )
+    goal = INTENSITY_GOAL_MINUTES
+    grid_rows, grid_total = intensity_grid_rows(goal)
+    row_count = len(grid_rows)
+
+    # Zone minutes are not tracked yet; treat all logged minutes as easy
+    # running until per-zone heart-rate data is available.
+    easy_minutes, tempo_minutes = minutes_completed, 0
+    above_threshold_minutes, threshold_minutes = 0, 0
+
+    easy_clamped = min(easy_minutes, grid_total)
+    tempo_clamped = min(tempo_minutes, grid_total - easy_clamped)
+    bottom_used = easy_clamped + tempo_clamped
+    above_clamped = min(above_threshold_minutes, grid_total - bottom_used)
+    threshold_clamped = min(threshold_minutes, grid_total - bottom_used - above_clamped)
+
+    bottom_allocation = allocate_intensity_stack(
+        list(reversed(grid_rows)), (easy_clamped, tempo_clamped)
+    )
+    bottom_allocation = list(reversed(bottom_allocation))
+    top_allocation = allocate_intensity_stack(grid_rows, (above_clamped, threshold_clamped))
+
+    clip_defs = []
+    row_groups = []
+    mesh_lines = []
+    for position, row in enumerate(grid_rows):
+        y_top, y_bottom = row["y_top"], row["y_bottom"]
+        capacity = row["capacity"]
+        clip_id = f"intensity-row-{position}"
+        clip_defs.append(
+            f'<clipPath id="{clip_id}"><polygon points="'
+            f'{intensity_trapezoid_points(y_top, y_bottom)}"/></clipPath>'
+        )
+        fills = [f'<rect x="0" y="0" width="100" height="100" fill="#ffffff"></rect>']
+        cursor_from_bottom = 0.0
+        for zone_index, used in bottom_allocation[position]:
+            fraction = used / capacity
+            rect_bottom = y_bottom - cursor_from_bottom / capacity * (y_bottom - y_top)
+            rect_top = rect_bottom - fraction * (y_bottom - y_top)
+            color = INTENSITY_BOTTOM_STACK[zone_index][1]
+            fills.append(
+                f'<rect x="0" y="{rect_top:.2f}" width="100" height="{rect_bottom - rect_top:.2f}" fill="{color}"></rect>'
+            )
+            cursor_from_bottom += used
+        cursor_from_top = 0.0
+        for zone_index, used in top_allocation[position]:
+            fraction = used / capacity
+            rect_top = y_top + cursor_from_top / capacity * (y_bottom - y_top)
+            rect_bottom = rect_top + fraction * (y_bottom - y_top)
+            color = INTENSITY_TOP_STACK[zone_index][1]
+            fills.append(
+                f'<rect x="0" y="{rect_top:.2f}" width="100" height="{rect_bottom - rect_top:.2f}" fill="{color}"></rect>'
+            )
+            cursor_from_top += used
+        row_groups.append(f'<g clip-path="url(#{clip_id})">{"".join(fills)}</g>')
+
+        for x1, y1, x2, y2 in intensity_zigzag_lines(position + 1, row_count):
+            mesh_lines.append(
+                f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+                'stroke="#171b19" stroke-width="0.5" stroke-opacity="0.55"></line>'
+            )
+        if position > 0:
+            half = y_top / 2
+            mesh_lines.append(
+                f'<line x1="{50 - half:.2f}" y1="{y_top:.2f}" x2="{50 + half:.2f}" y2="{y_top:.2f}" '
+                'stroke="#171b19" stroke-width="0.7"></line>'
+            )
+
+    outline = '<polygon points="50,0 100,100 0,100" fill="none" stroke="#171b19" stroke-width="2"></polygon>'
+    svg = (
+        '<svg class="intensity-pyramid" viewBox="0 0 100 100" role="img" '
+        f'aria-label="Weekly intensity pyramid: {minutes_completed} of {goal} minutes">'
+        f'<defs>{"".join(clip_defs)}</defs>'
+        f'{"".join(row_groups)}{"".join(mesh_lines)}{outline}'
+        "</svg>"
+    )
+
+    label_items = [
+        f'<div class="intensity-label">'
+        f'<span class="intensity-swatch" style="background: {color}"></span>{html.escape(label)}</div>'
+        for label, color in (*INTENSITY_TOP_STACK, *reversed(INTENSITY_BOTTOM_STACK))
+    ]
+
+    remaining = max(goal - minutes_completed, 0)
+    message = (
+        "Goal complete - great intensity balance!"
+        if minutes_completed >= goal
+        else f"{remaining} more minute{'s' if remaining != 1 else ''} to fill this week's pyramid"
+    )
+    return (
+        '<article class="summary-card intensity-card">'
+        "<h3>This week's intensity</h3>"
+        f'<p class="goal-count"><strong>{minutes_completed}</strong> / {goal} min</p>'
+        '<div class="intensity-shell">'
+        f"{svg}"
+        f'<div class="intensity-labels">{"".join(label_items)}</div>'
+        "</div>"
+        f'<p class="goal-message">{message}</p>'
+        "</article>"
+    )
 
 
 def strength_pyramid_markup(rows, today):
@@ -393,7 +613,7 @@ def strength_pyramid_markup(rows, today):
     for session_day in session_dates:
         if previous_session is not None:
             gap_days = (session_day - previous_session).days
-            if gap_days > STRENGTH_PYRAMID_KEEP_DAYS:
+            if gap_days >= STRENGTH_PYRAMID_KEEP_DAYS:
                 filled_segments = max(
                     filled_segments - gap_days // STRENGTH_PYRAMID_KEEP_DAYS, 0
                 )
@@ -636,7 +856,6 @@ def _render_single_user(
         )
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
     summary_cards.append(strength_pyramid_markup(rows, today))
-    summary_cards.append(adaptive_trail_markup(rows, today))
 
     grouped = OrderedDict()
     for row in rows:
@@ -738,6 +957,12 @@ def _render_single_user(
         .goal-track {{ background: var(--line); height: 0.55rem; overflow: hidden; }}
         .goal-track span {{ background: var(--teal); display: block; height: 100%; }}
         .goal-message {{ color: var(--muted); font-size: 0.78rem; margin: 0.7rem 0 0; }}
+        .intensity-card {{ border-top-color: #a53f30 !important; grid-column: span 2; }}
+        .intensity-shell {{ align-items: stretch; display: flex; gap: 1rem; margin-top: 0.6rem; }}
+        .intensity-pyramid {{ flex: 0 0 auto; height: 9rem; width: 9rem; }}
+        .intensity-labels {{ display: flex; flex: 1; flex-direction: column; gap: 0.5rem; justify-content: center; }}
+        .intensity-label {{ align-items: center; display: flex; font: 600 0.72rem "DM Sans", sans-serif; gap: 0.4rem; }}
+        .intensity-swatch {{ border: 1px solid var(--ink); display: inline-block; flex: 0 0 auto; height: 0.6rem; width: 0.6rem; }}
         .trail-card {{ border-top-color: #517d43 !important; grid-column: span 2; }}
         .trail-message {{ color: var(--muted); font-size: 0.82rem; margin: 0.7rem 0; min-height: 2.4em; }}
         .trail-grid {{ display: grid; gap: 0.08rem; grid-template-columns: repeat(42, minmax(0, 1fr)); }}
@@ -816,6 +1041,8 @@ def _render_single_user(
             .summary-grid {{ grid-template-columns: 1fr; }}
             .section-heading {{ align-items: start; flex-direction: column; gap: 0.35rem; }}
             .summary-card {{ padding: 1rem; }}
+            .intensity-card {{ grid-column: auto; }}
+            .intensity-pyramid {{ height: 7rem; width: 7rem; }}
             .trail-card {{ grid-column: auto; }}
             .trail-grid {{ gap: 0.06rem; }}
             .week-section {{ margin-left: -0.25rem; margin-right: -0.25rem; padding: 0.75rem; }}

@@ -34,13 +34,14 @@ GitHub Pages visibility is controlled by GitHub organization and repository sett
 
 ### At a glance goal cards
 
-Choose each account's cards in `GOAL_CARD_VIEWS` near the top of `build_report.py`. The available views are:
+Choose each account's cards in `GOAL_CARD_VIEWS` in [report_config.py](report_config.py). The available views are:
 
 - `weekly_run_count`: four runs per Monday-Sunday week.
 - `weekly_run_minutes`: 150 minutes of running per Monday-Sunday week.
 - `weekly_strength`: two strength sessions per Monday-Sunday week.
+- `weekly_intensity`: a white, black-bordered pyramid split into four horizontal bands (Above Threshold, Threshold, Tempo, Easy, top to bottom). Easy occupies 70% of the pyramid's area, the other three bands share the remaining 30% equally. The pyramid fills from the bottom as weekly training minutes accrue toward `INTENSITY_GOAL_MINUTES`, also set in `report_config.py`. Per-zone minutes are not tracked yet, so the fill is currently driven by total weekly running minutes.
 
-Use an empty tuple, such as `"manga": ()`, to hide all goal cards for that account. The current setup gives manga the 150-minute running goal and chips the four-run goal.
+Use an empty tuple, such as `"manga": ()`, to hide all goal cards for that account. The current setup gives manga the 150-minute running goal and chips the four-run goal; both accounts see the strength goal and the intensity pyramid.
 
 ## Adaptive Pixel Trail
 
@@ -78,7 +79,7 @@ The **Strength progress pyramid** is a 16-layer white pyramid with a black borde
 
 - A strength workout logged within six days of the previous one fills another layer.
 - Once full, the pyramid stays full when a strength workout is logged at least every six days.
-- If more than six days pass without another strength workout, one layer is removed for every completed six-day interval without one.
+- Five days without another strength workout makes no change to the pyramid; on the sixth day with no workout logged, one layer is removed. One layer is removed for every completed six-day interval without one.
 - The pyramid never drops below zero; an empty pyramid is simply ready for the next strength workout.
 - The card displays the next maintenance date as: `Log a strength workout by Ddd to keep all your strength.`
 
