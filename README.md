@@ -32,6 +32,16 @@ For the workflow, add `SUPABASE_DB_URL` and whichever account token secrets are 
 
 GitHub Pages visibility is controlled by GitHub organization and repository settings. A private repository does not automatically make a Pages site private on every GitHub plan, so check the Pages visibility setting before publishing personal health data.
 
+### At a glance goal cards
+
+Choose each account's cards in `GOAL_CARD_VIEWS` near the top of `build_report.py`. The available views are:
+
+- `weekly_run_count`: four runs per Monday-Sunday week.
+- `weekly_run_minutes`: 150 minutes of running per Monday-Sunday week.
+- `weekly_strength`: two strength sessions per Monday-Sunday week.
+
+Use an empty tuple, such as `"manga": ()`, to hide all goal cards for that account. The current setup gives manga the 150-minute running goal and chips the four-run goal.
+
 ## Adaptive Pixel Trail
 
 The **Adaptive Pixel Trail** in the report's At a glance section is a 28-day visual of training consistency. Each small square is a day and also a seed in a small, recoverable garden. It is designed to make momentum and return-to-training visible without treating missed sessions as failure.
@@ -61,6 +71,18 @@ The current cadence is hard-coded in `build_report.py` and can later be moved to
 5. The card's message reflects the current state: it celebrates growth, acknowledges repaired momentum, or gently invites the next session when a seed is waiting for care.
 
 The trail provides chronological progression, while the garden metaphor makes recovery visible: every later session can nourish an earlier square. Future enhancements could add a gentle transition from orange to green, a brief bloom pulse for mixed training days, and seasonal colour palettes without changing the consistency rules.
+
+## Strength Progress Pyramid
+
+The **Strength progress pyramid** is a 16-layer white pyramid with a black border. Each strength-training workout fills the next horizontal layer from the bottom upward, up to all 16 layers.
+
+- A strength workout logged within six days of the previous one fills another layer.
+- Once full, the pyramid stays full when a strength workout is logged at least every six days.
+- If more than six days pass without another strength workout, one layer is removed for every completed six-day interval without one.
+- The pyramid never drops below zero; an empty pyramid is simply ready for the next strength workout.
+- The card displays the next maintenance date as: `Log a strength workout by Ddd to keep all your strength.`
+
+This is intentionally a maintenance rhythm rather than a pass/fail score. Returning to strength training always starts building the pyramid again.
 
 ## Run notebook
 

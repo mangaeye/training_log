@@ -4,9 +4,10 @@ import math
 import os
 import shutil
 from collections import OrderedDict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from xml.etree import ElementTree
+from zoneinfo import ZoneInfo
 
 import psycopg2
 
@@ -15,11 +16,18 @@ OUTPUT = ROOT / "site" / "index.html"
 ROUTE_KML = ROOT / "route.kml"
 KB_ICON = ROOT / "kb_icon.jpg"
 ACCOUNT_NAMES = ("manga", "chips")
+GOAL_CARD_VIEWS = {
+    "manga": ("weekly_run_minutes", "weekly_strength"),
+    "chips": ("weekly_run_count", "weekly_strength"),
+}
 TRAIL_DAYS = 28
 TRAIL_EPOCH = date(2026, 9, 15)
 RUN_CADENCE_DAYS = 2
 STRENGTH_CADENCE_DAYS = 4
 HEALING_SESSION_COUNT = 2
+STRENGTH_PYRAMID_SEGMENTS = 16
+STRENGTH_PYRAMID_KEEP_DAYS = 6
+REPORT_TIMEZONE = ZoneInfo("Australia/Melbourne")
 
 
 def load_env_file():
@@ -295,6 +303,39 @@ def weekly_run_goal_markup(rows, today):
     )
 
 
+def weekly_run_minutes_goal_markup(rows, today):
+    week_start = today - timedelta(days=today.weekday())
+    minutes_completed = int(
+        (
+            sum(
+                float(row[5] or 0)
+                for row in rows
+                if week_start <= row[0] <= today
+            )
+            + 30
+        )
+        // 60
+    )
+    goal = 150
+    progress = min(minutes_completed / goal, 1)
+    remaining = max(goal - minutes_completed, 0)
+    message = (
+        "Goal complete - strong week!"
+        if minutes_completed >= goal
+        else f"{remaining} more minute{'s' if remaining != 1 else ''} to reach your goal"
+    )
+    return (
+        '<article class="summary-card goal-card">'
+        "<h3>Weekly run goal</h3>"
+        f"<p class=\"goal-count\"><strong>{minutes_completed}</strong> / {goal} min</p>"
+        f"<div class=\"goal-track\" role=\"progressbar\" aria-label=\"Weekly 150-minute run goal\" "
+        f"aria-valuenow=\"{min(minutes_completed, goal)}\" aria-valuemin=\"0\" aria-valuemax=\"{goal}\">"
+        f"<span style=\"width: {progress:.0%}\"></span></div>"
+        f"<p class=\"goal-message\">{message}</p>"
+        "</article>"
+    )
+
+
 def weekly_strength_goal_markup(rows, today):
     week_start = today - timedelta(days=today.weekday())
     strength_completed = sum(
@@ -322,6 +363,70 @@ def weekly_strength_goal_markup(rows, today):
         f"aria-valuenow=\"{min(strength_completed, goal)}\" aria-valuemin=\"0\" aria-valuemax=\"{goal}\">"
         f"<span style=\"width: {progress:.0%}\"></span></div>"
         f"<p class=\"goal-message\">{message}</p>"
+        "</article>"
+    )
+
+
+def goal_cards_markup(rows, today, account_name):
+    card_builders = {
+        "weekly_run_count": weekly_run_goal_markup,
+        "weekly_run_minutes": weekly_run_minutes_goal_markup,
+        "weekly_strength": weekly_strength_goal_markup,
+    }
+    return [
+        card_builders[view](rows, today)
+        for view in GOAL_CARD_VIEWS.get(account_name, ())
+    ]
+
+
+def strength_pyramid_markup(rows, today):
+    session_dates = sorted(
+        row[0]
+        for row in rows
+        for activity in row[6]
+        if row[0] <= today
+        and str(activity.get("sport", "")).lower()
+        in {"strength", "strength_training"}
+    )
+    filled_segments = 0
+    previous_session = None
+    for session_day in session_dates:
+        if previous_session is not None:
+            gap_days = (session_day - previous_session).days
+            if gap_days > STRENGTH_PYRAMID_KEEP_DAYS:
+                filled_segments = max(
+                    filled_segments - gap_days // STRENGTH_PYRAMID_KEEP_DAYS, 0
+                )
+        filled_segments = min(filled_segments + 1, STRENGTH_PYRAMID_SEGMENTS)
+        previous_session = session_day
+
+    if previous_session is None:
+        days_remaining = STRENGTH_PYRAMID_KEEP_DAYS
+        due_date = today + timedelta(days=days_remaining)
+    else:
+        elapsed_days = (today - previous_session).days
+        decay_count = elapsed_days // STRENGTH_PYRAMID_KEEP_DAYS
+        filled_segments = max(filled_segments - decay_count, 0)
+        days_remaining = STRENGTH_PYRAMID_KEEP_DAYS - (elapsed_days % STRENGTH_PYRAMID_KEEP_DAYS)
+        due_date = today + timedelta(days=days_remaining)
+
+    segments = []
+    for position in range(STRENGTH_PYRAMID_SEGMENTS):
+        segment_number = STRENGTH_PYRAMID_SEGMENTS - position
+        filled = segment_number <= filled_segments
+        width = (position + 1) / STRENGTH_PYRAMID_SEGMENTS * 100
+        state = " filled" if filled else ""
+        segments.append(
+            f'<span class="pyramid-segment{state}" style="width: {width:.2f}%" '
+            f'aria-label="Strength pyramid segment {segment_number}: '
+            f'{"filled" if filled else "empty"}"></span>'
+        )
+    return (
+        '<article class="summary-card pyramid-card">'
+        "<h3>Strength progress pyramid</h3>"
+        f'<div class="strength-pyramid" role="img" aria-label="{filled_segments} of {STRENGTH_PYRAMID_SEGMENTS} strength pyramid segments filled">'
+        f"{''.join(segments)}</div>"
+        f"<p class=\"pyramid-note\">Log a strength workout by {due_date.strftime('%a %d %b')} to keep all your strength.</p>"
         "</article>"
     )
 
@@ -505,9 +610,13 @@ def week_calendar(rows, start_date, end_date):
 
 
 def _render_single_user(
-    rows, account_name, completed_by_account, completed_by_account_yesterday
+    rows,
+    account_name,
+    completed_by_account,
+    completed_by_account_yesterday,
+    generated_at,
 ):
-    today = date.today()
+    today = generated_at.date()
     current_monday = today - timedelta(days=today.weekday())
     last_week_monday = current_monday - timedelta(days=7)
     summary_cards = []
@@ -525,8 +634,8 @@ def _render_single_user(
             # f"<div><dt>Avg sedentary/day</dt><dd>{format_duration(totals['average_sedentary'])}</dd></div>"
             "</dl></article>"
         )
-    summary_cards.append(weekly_run_goal_markup(rows, today))
-    summary_cards.append(weekly_strength_goal_markup(rows, today))
+    summary_cards.extend(goal_cards_markup(rows, today, account_name))
+    summary_cards.append(strength_pyramid_markup(rows, today))
     summary_cards.append(adaptive_trail_markup(rows, today))
 
     grouped = OrderedDict()
@@ -537,47 +646,33 @@ def _render_single_user(
     sections = []
     for monday, week_rows in grouped.items():
         label = week_label(monday)
-        body = []
-        for day, total_distance, _sedentary, run_count, run_distance, run_time, activities in week_rows:
-            strength_count = sum(
-                1 for activity in activities
-                if str(activity.get("sport", "")).lower()
-                in {"strength", "strength_training"}
-            )
-            body.append(
-                "<tr>"
-                f"<td>{html.escape(format_date(day))}</td>"
-                f"<td>{html.escape(format_distance(total_distance))}</td>"
-                # f"<td>{html.escape(format_duration(_sedentary))}</td>"
-                f"<td>{int(run_count or 0)}</td>"
-                f"<td>{strength_count}</td>"
-                f"<td>{html.escape(format_distance(run_distance))}</td>"
-                f"<td>{html.escape(format_run_duration(run_time))}</td>"
-                "</tr>"
-            )
+        week_end = monday + timedelta(days=6)
+        totals = period_totals(rows, monday, week_end)
+        summary_totals = (
+            f"<span class=\"week-history-totals\">"
+            f"{format_distance(totals['run_distance'])} km · "
+            f"{format_run_duration(totals['run_time'])}</span>"
+        )
         sections.append(
-            f"<details class=\"week-group\"><summary>{html.escape(label)}</summary>"
-            "<div class=\"table-wrap\"><table><thead><tr>"
-            "<th>Date</th><th>Total distance (km)</th>"
-            "<th>Run activities</th><th>Strength activities</th>"
-            "<th>Run distance (km)</th><th>Run time</th>"
-            "</tr></thead><tbody>"
-            + "".join(body)
-            + "</tbody></table></div></details>"
+            f"<details class=\"week-group\"><summary>{html.escape(label)}{summary_totals}</summary>"
+            f"{week_calendar(rows, monday, week_end)}</details>"
         )
 
     calendar_section = (
         "<section class=\"calendar-section\"><div class=\"section-heading\">"
-        "<div><p class=\"eyebrow\">Calendar view</p><h2>Last week and this week</h2></div></div>"
-        f"<article class=\"calendar-card\"><h3>Week {last_week_monday.isocalendar().week} · Last week</h3>"
-        f"{week_calendar(rows, last_week_monday, current_monday - timedelta(days=1))}</article>"
+        "<div><p class=\"eyebrow\">Calendar view</p><h2>Current week</h2></div></div>"
         f"<article class=\"calendar-card\"><h3>Week {current_monday.isocalendar().week} · Current week</h3>"
         f"{week_calendar(rows, current_monday, current_monday + timedelta(days=6))}</article>"
         f"{long_run_markup(rows, today, account_name, completed_by_account, completed_by_account_yesterday)}</section>"
     )
 
     latest_data_date = max((row[0] for row in rows), default=None)
-    generated = "No successful Garmin data fetch recorded" if latest_data_date is None else f"Data through {format_date(latest_data_date)}"
+    generated_time = generated_at.strftime("%a %d %b %Y %H:%M %Z")
+    generated = (
+        f"No successful Garmin data fetch recorded · Updated {generated_time}"
+        if latest_data_date is None
+        else f"Data updated {generated_time}"
+    )
     summary = "<section class=\"summary-section\"><div class=\"section-heading\">"
     summary += "<p class=\"eyebrow\">At a glance</p><h2>Training totals</h2>"
     summary += "</div><div class=\"summary-grid\">" + "".join(summary_cards) + "</div></section>"
@@ -633,6 +728,11 @@ def _render_single_user(
         .summary-card:nth-child(4) {{ border-top-color: #755d8a; }}
         .goal-card {{ border-top-color: var(--teal) !important; }}
         .strength-goal-card {{ border-top-color: #c8872d !important; }}
+        .pyramid-card {{ border-top-color: var(--ink) !important; }}
+        .strength-pyramid {{ align-items: center; display: flex; flex-direction: column; gap: 0.12rem; margin: 0.8rem auto; width: min(100%, 12rem); }}
+        .pyramid-segment {{ background: #fff; border: 1px solid var(--ink); display: block; height: 0.42rem; }}
+        .pyramid-segment.filled {{ background: #c8872d; }}
+        .pyramid-note {{ color: var(--muted); font-size: 0.78rem; line-height: 1.35; margin: 0.7rem 0 0; }}
         .goal-count {{ font-size: 1.15rem; margin: 1rem 0 0.7rem; }}
         .goal-count strong {{ font-size: 1.8rem; }}
         .goal-track {{ background: var(--line); height: 0.55rem; overflow: hidden; }}
@@ -658,15 +758,16 @@ def _render_single_user(
         .week-section {{ background: var(--card); border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 1rem; }}
         .week-group {{ background: var(--card); border: 1px solid var(--line); margin: 0.75rem 0; }}
         .week-group summary {{ cursor: pointer; font-family: "Space Grotesk", sans-serif; font-size: 1.15rem; font-weight: 600; list-style-position: inside; padding: 1rem; }}
+        .week-history-totals {{ color: var(--muted); float: right; font: 0.72rem "DM Sans", sans-serif; margin: 0.25rem 0.3rem 0 0; }}
         .week-group[open] summary {{ border-bottom: 1px solid var(--line); }}
-        .week-group .table-wrap {{ padding: 0 1rem 1rem; }}
+        .week-group .calendar-grid {{ padding: 1rem; }}
         .calendar-card {{ background: var(--card); border: 1px solid var(--line); margin: 1rem 0; padding: 1rem; }}
         .calendar-card h3 {{ border-bottom: 1px solid var(--line); padding-bottom: 0.8rem; }}
         .long-run {{ background: var(--card); border: 1px solid var(--accent); margin: 1rem 0; padding: 0 1rem; }}
         .long-run summary {{ cursor: pointer; font-family: "Space Grotesk", sans-serif; font-size: 1.15rem; font-weight: 600; list-style-position: inside; padding: 1rem 0; }}
         .long-run[open] summary {{ border-bottom: 1px solid var(--line); }}
-        .long-run-grid {{ background: var(--accent-soft); border: 1px solid var(--accent); display: grid; gap: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 1rem; padding: 0.45rem; }}
-        .long-run-grid div {{ border-left: 1px solid rgba(239, 101, 70, 0.35); padding: 0.55rem 0.7rem; }}
+        .long-run-grid {{ background: #dcebef; border: 1px solid #4c8791; display: grid; gap: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 1rem; padding: 0.45rem; }}
+        .long-run-grid div {{ border-left: 1px solid rgba(76, 135, 145, 0.4); padding: 0.55rem 0.7rem; }}
         .long-run-grid div:first-child {{ border-left: 0; }}
         .long-run-grid dt {{ color: var(--muted); font: 0.68rem Arial, sans-serif; text-transform: uppercase; }}
         .long-run-grid dd {{ font-size: 1rem; margin: 0.2rem 0 0; text-align: left; }}
@@ -718,9 +819,10 @@ def _render_single_user(
             .trail-card {{ grid-column: auto; }}
             .trail-grid {{ gap: 0.06rem; }}
             .week-section {{ margin-left: -0.25rem; margin-right: -0.25rem; padding: 0.75rem; }}
+            .week-history-totals {{ float: none; margin-left: 0.35rem; }}
             .long-run-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-            .long-run-grid div:nth-child(3) {{ border-left: 0; border-top: 1px solid rgba(239, 101, 70, 0.35); }}
-            .long-run-grid div:nth-child(4) {{ border-top: 1px solid rgba(239, 101, 70, 0.35); }}
+            .long-run-grid div:nth-child(3) {{ border-left: 0; border-top: 1px solid rgba(76, 135, 145, 0.4); }}
+            .long-run-grid div:nth-child(4) {{ border-top: 1px solid rgba(76, 135, 145, 0.4); }}
             .long-run-map {{ height: 15rem; min-height: 15rem; }}
             .calendar-grid {{ grid-template-columns: repeat(7, minmax(0, 1fr)); }}
             .calendar-day {{ min-height: 6rem; padding: 0.3rem; }}
@@ -755,14 +857,19 @@ def _render_single_user(
 """
 
 
-def render(rows):
+def render(rows, generated_at=None):
+    generated_at = generated_at or datetime.now(REPORT_TIMEZONE)
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=REPORT_TIMEZONE)
+    else:
+        generated_at = generated_at.astimezone(REPORT_TIMEZONE)
         rows_by_account = OrderedDict((account, []) for account in ACCOUNT_NAMES)
         for row in rows:
                 account_name = row[0] or "manga"
                 rows_by_account.setdefault(account_name, []).append(row[1:])
 
         epoch = date(2026, 9, 15)
-        today = date.today()
+        today = generated_at.date()
         completed_by_account = {
             account_name: sum(
                 float(row[1] or 0)
@@ -787,6 +894,7 @@ def render(rows):
                 account_name,
                 completed_by_account,
                 completed_by_account_yesterday,
+                generated_at,
             )
                 for account_name, account_rows in rows_by_account.items()
         ]
