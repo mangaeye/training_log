@@ -931,6 +931,11 @@ def _render_single_user(
         header {{ border-bottom: 2px solid var(--ink); margin-bottom: 2.8rem; padding-bottom: 2rem; position: relative; }}
         .program-link {{ background: var(--ink); color: var(--paper); font: 600 0.78rem "DM Sans", sans-serif; padding: 0.45rem 0.8rem; position: absolute; right: 0; text-decoration: none; top: 0; }}
         .program-link:hover {{ background: var(--accent); }}
+        .auth-chip {{ align-items: center; background: var(--card); border: 1px solid var(--line); color: var(--muted); display: inline-flex; font: 600 0.72rem "DM Sans", sans-serif; gap: 0.4rem; margin: 0.75rem 0 0; padding: 0.4rem 0.6rem; }}
+        .auth-chip::before {{ background: var(--muted); border-radius: 50%; content: ""; height: 0.5rem; width: 0.5rem; }}
+        .auth-chip.signed-in {{ border-color: var(--teal); color: var(--teal); }}
+        .auth-chip.signed-in::before {{ background: var(--teal); }}
+        .auth-chip a {{ color: inherit; text-decoration: underline; }}
         .eyebrow {{ color: var(--accent); font: 700 0.72rem/1.2 Arial, sans-serif; letter-spacing: 0.16em; margin: 0 0 0.85rem; text-transform: uppercase; }}
         h1 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(2rem, 5vw, 4rem); font-weight: 600; letter-spacing: -0.055em; line-height: 0.92; margin: 0; max-width: 12ch; }}
         h2 {{ font-family: "Space Grotesk", sans-serif; font-size: clamp(1.5rem, 3vw, 2.2rem); font-weight: 600; margin: 0; }}
@@ -1068,6 +1073,29 @@ def _render_single_user(
         }}
   </style>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="module">
+        import {{ createClient }} from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+        const supabaseClient = createClient(
+            "https://skwxshllgputbezvokmf.supabase.co",
+            "sb_publishable_hYt_-HqXz06xNz4cS2XrHQ_xTZsGbqk"
+        );
+        const authChips = document.querySelectorAll(".auth-status");
+
+        async function renderAuthStatus() {{
+            const {{ data }} = await supabaseClient.auth.getSession();
+            const isSignedIn = Boolean(data.session);
+            authChips.forEach((authChip) => {{
+                authChip.classList.toggle("signed-in", isSignedIn);
+                authChip.innerHTML = isSignedIn
+                    ? "Signed in - <a href=\"program.html\">manage workout block</a>"
+                    : "Not signed in - <a href=\"program.html\">sign in to manage workout block</a>";
+            }});
+        }}
+
+        supabaseClient.auth.onAuthStateChange(renderAuthStatus);
+        renderAuthStatus();
+    </script>
 </head>
 <body>
     <main class="page">
@@ -1075,6 +1103,7 @@ def _render_single_user(
             <p class="eyebrow">Training Log · {html.escape(account_name)}</p>
             <a class="program-link" href="program.html">Workout block &rarr;</a>
             <h1>Training Log</h1>
+            <p class="auth-chip auth-status">Checking sign-in…</p>
             <p class="updated">{html.escape(generated)}</p>
         </header>
         {summary}

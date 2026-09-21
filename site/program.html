@@ -63,12 +63,18 @@
     .intensity-table tr:last-child td { border-bottom: 0; }
     .intensity-table tr.completed td { opacity: 0.5; text-decoration: line-through; }
     .intensity-dot { border-radius: 50%; display: inline-block; height: 0.55rem; margin-right: 0.4rem; width: 0.55rem; }
+    .auth-chip { align-items: center; background: #fff; border: 1px solid var(--line); display: inline-flex; font: 600 0.72rem "DM Sans", sans-serif; gap: 0.4rem; margin: 0 0 1rem; padding: 0.4rem 0.6rem; }
+    .auth-chip::before { background: var(--muted); border-radius: 50%; content: ""; height: 0.5rem; width: 0.5rem; }
+    .auth-chip.signed-in { border-color: var(--teal); color: var(--teal); }
+    .auth-chip.signed-in::before { background: var(--teal); }
+    .auth-chip a { color: inherit; text-decoration: underline; }
 </style>
 </head>
 <body>
 <main class="page">
     <p class="top-nav"><a href="index.html">&larr; Back to training log</a></p>
     <h1>Pick-and-Mix Workout Block</h1>
+    <p class="auth-chip" id="auth-status">Checking sign-in…</p>
 
     <!-- Fill in your Supabase project URL and anon (public) key below.
          The anon key is safe to expose client-side; access is enforced by
@@ -156,7 +162,6 @@
         </table>
     </section>
 
-    <p class="status" id="auth-status">Checking session…</p>
 </main>
 
 <script type="module">
@@ -192,6 +197,11 @@
     function setStatus(element, message, kind) {
         element.textContent = message || "";
         element.className = "status" + (kind ? ` ${kind}` : "");
+    }
+
+    function setAuthStatus(message, isSignedIn) {
+        authStatus.textContent = message;
+        authStatus.className = "auth-chip" + (isSignedIn ? " signed-in" : "");
     }
 
     async function login(email) {
@@ -405,13 +415,13 @@
         const isLoggedIn = Boolean(data.session);
         const accountName = isLoggedIn ? await loadAccountLink(data.session.user.id) : null;
         showLoggedInUi(isLoggedIn, Boolean(accountName));
-        setStatus(
-            authStatus,
+        setAuthStatus(
             !isLoggedIn
-                ? "Log in to view or edit your workout block."
+                ? "Not signed in - log in below to manage a workout block."
                 : accountName
-                ? `Logged in as ${accountName}`
-                : ""
+                ? `Signed in - ${accountName}`
+                : "Signed in - choose your Garmin account below.",
+            isLoggedIn
         );
         if (isLoggedIn && accountName && startDateInput.value) {
             await loadBlock(startDateInput.value);
