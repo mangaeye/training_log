@@ -221,7 +221,7 @@ def long_run_markup(
             f"const route = L.polyline({route_json}, {{color: '#ef6546', weight: 4, opacity: 0.9}}).addTo(map);"
             f"{marker_script}"
             "const runnerMarkers = [markerM, markerC];"
-            "map.fitBounds(route.getBounds(), {padding: [18, 18]});"
+            "map.fitBounds(L.featureGroup(runnerMarkers).getBounds(), {padding: [48, 48], maxZoom: 15});"
             "L.control.layers({'OpenStreetMap': osm, 'Esri satellite': satellite}, {}).addTo(map);"
             f"const mapShell = document.getElementById('{map_id}').parentElement;"
             f"mapShell.querySelector('[data-map-action=current]').addEventListener('click', () => map.setView(marker{current_marker_name}.getLatLng(), 14));"
@@ -232,13 +232,13 @@ def long_run_markup(
         )
     return (
         "<details class=\"long-run\" open><summary>The Long Run</summary>"
-        "<dl class=\"long-run-grid\">"
+        "<div class=\"long-run-content\"><dl class=\"long-run-grid\">"
         f"<div><dt>Start date</dt><dd>{epoch.strftime('%a %d %b %Y')}</dd></div>"
         f"<div><dt>Total race distance</dt><dd>{format_whole_distance(total_race_distance)} km</dd></div>"
         f"<div><dt>Km completed</dt><dd>{completed_value}</dd></div>"
         f"<div><dt>Days remaining</dt><dd>{days_remaining if days_remaining is not None else '-'} </dd></div>"
         f"<div><dt>Estimated day of arrival</dt><dd>{arrival_value}</dd></div>"
-        f"</dl>{map_markup}"
+        f"</dl>{map_markup}</div>"
         "</details>"
     )
 
@@ -996,12 +996,13 @@ def _render_single_user(
         .long-run {{ background: var(--card); border: 1px solid var(--accent); margin: 1rem 0; padding: 0 1rem; }}
         .long-run summary {{ cursor: pointer; font-family: "Space Grotesk", sans-serif; font-size: 1.15rem; font-weight: 600; list-style-position: inside; padding: 1rem 0; }}
         .long-run[open] summary {{ border-bottom: 1px solid var(--line); }}
-        .long-run-grid {{ background: #dcebef; border: 1px solid #4c8791; display: grid; gap: 0; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0 0 1rem; padding: 0.45rem; }}
-        .long-run-grid div {{ border-left: 1px solid rgba(76, 135, 145, 0.4); padding: 0.55rem 0.7rem; }}
-        .long-run-grid div:first-child {{ border-left: 0; }}
-        .long-run-grid dt {{ color: var(--muted); font: 0.68rem Arial, sans-serif; text-transform: uppercase; }}
-        .long-run-grid dd {{ font-size: 1rem; margin: 0.2rem 0 0; text-align: left; }}
-        .long-run-map-shell {{ border-top: 1px solid var(--line); margin: 0 -1rem; padding: 1rem; position: relative; }}
+        .long-run-content {{ display: grid; gap: 1rem; grid-template-columns: minmax(12rem, 1fr) minmax(0, 3fr); margin: 0 0 1rem; }}
+        .long-run-grid {{ background: #dcebef; border: 1px solid #4c8791; display: grid; gap: 0; grid-template-columns: 1fr; margin: 0; padding: 0.45rem; }}
+        .long-run-grid div {{ align-items: baseline; border-top: 1px solid rgba(76, 135, 145, 0.4); display: flex; gap: 0.5rem; justify-content: space-between; padding: 0.55rem 0.7rem; }}
+        .long-run-grid div:first-child {{ border-top: 0; }}
+        .long-run-grid dt {{ color: var(--muted); font: 600 0.72rem/1.2 "DM Sans", sans-serif; letter-spacing: 0.04em; text-align: left; text-transform: uppercase; }}
+        .long-run-grid dd {{ font: 600 0.9rem/1.2 "Space Grotesk", sans-serif; margin: 0; text-align: right; }}
+        .long-run-map-shell {{ border-left: 1px solid var(--line); padding-left: 1rem; position: relative; }}
         .long-run-map-actions {{ display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }}
         .long-run-map-actions button {{ background: var(--paper); border: 1px solid var(--ink); color: var(--ink); cursor: pointer; font: 600 0.68rem "DM Sans", sans-serif; padding: 0.35rem 0.55rem; }}
         .long-run-map-actions button:hover {{ background: var(--ink); color: var(--paper); }}
@@ -1052,9 +1053,8 @@ def _render_single_user(
             .trail-grid {{ gap: 0.06rem; }}
             .week-section {{ margin-left: -0.25rem; margin-right: -0.25rem; padding: 0.75rem; }}
             .week-history-totals {{ float: none; margin-left: 0.35rem; }}
-            .long-run-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-            .long-run-grid div:nth-child(3) {{ border-left: 0; border-top: 1px solid rgba(76, 135, 145, 0.4); }}
-            .long-run-grid div:nth-child(4) {{ border-top: 1px solid rgba(76, 135, 145, 0.4); }}
+            .long-run-content {{ grid-template-columns: 1fr; }}
+            .long-run-map-shell {{ border-left: 0; border-top: 1px solid var(--line); padding: 1rem 0 0; }}
             .long-run-map {{ height: 15rem; min-height: 15rem; }}
             .calendar-grid {{ grid-template-columns: repeat(7, minmax(0, 1fr)); }}
             .calendar-day {{ min-height: 6rem; padding: 0.3rem; }}
