@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS activities (
     max_cadence REAL,
     calories INTEGER,
     steps INTEGER,
+    hr_zone_seconds JSONB NOT NULL DEFAULT '{}'::jsonb,
     source_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -78,6 +79,9 @@ ALTER TABLE daily_summaries
 
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS account_name TEXT NOT NULL DEFAULT 'manga';
+
+ALTER TABLE activities
+    ADD COLUMN IF NOT EXISTS hr_zone_seconds JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_name
     ON users(account_name);

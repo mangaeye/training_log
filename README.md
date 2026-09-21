@@ -20,7 +20,9 @@ python -m ipykernel install --user --name garmin-project
 python sync_garmin_to_supabase.py --days 7
 ```
 
-The sync upserts daily summaries, activities, sport totals, and raw API payloads. It skips finalized historical dates, refreshes today on every run while the day is in progress, and finalizes yesterday once. The `daily_summaries.is_final` marker prevents repeated fetching of completed days.
+The sync upserts daily summaries, activities, sport totals, raw API payloads, and running heart-rate zone times. Garmin's native zones 1 and 2 are presented as Easy, zone 3 as Tempo, zone 4 as Threshold, and zone 5 as Above threshold. Zone times are stored as seconds in `activities.hr_zone_seconds`. It skips finalized historical dates, refreshes today on every run while the day is in progress, and finalizes yesterday once. The `daily_summaries.is_final` marker prevents repeated fetching of completed days.
+
+Running zone data is fetched from Garmin's activity-detail endpoint when it is not already present in the activity summary. A detail-fetch failure does not prevent the activity itself from syncing. Because finalized historical dates are skipped, run an explicit historical sync range after this feature is deployed if older activities need zone data refreshed.
 
 If the direct database hostname is unreachable, use the Supabase pooler connection string from Database Settings instead.
 
@@ -41,7 +43,7 @@ Choose each account's cards in `GOAL_CARD_VIEWS` in [report_config.py](report_co
 - `weekly_run_count`: four runs per Monday-Sunday week.
 - `weekly_run_minutes`: 150 minutes of running per Monday-Sunday week.
 - `weekly_strength`: two strength sessions per Monday-Sunday week.
-- `weekly_intensity`: a white, black-bordered pyramid split into four horizontal bands (Above Threshold, Threshold, Tempo, Easy, top to bottom). Easy occupies 70% of the pyramid's area, the other three bands share the remaining 30% equally. The pyramid fills from the bottom as weekly training minutes accrue toward `INTENSITY_GOAL_MINUTES`, also set in `report_config.py`. Per-zone minutes are not tracked yet, so the fill is currently driven by total weekly running minutes.
+- `weekly_intensity`: a white, black-bordered pyramid split into four horizontal bands (Above Threshold, Threshold, Tempo, Easy, top to bottom). The pyramid fills from the bottom as the stored weekly four-zone minutes accrue toward `INTENSITY_GOAL_MINUTES`, also set in `report_config.py`.
 
 Use an empty tuple, such as `"manga": ()`, to hide all goal cards for that account. The current setup gives manga the 150-minute running goal and chips the four-run goal; both accounts see the strength goal and the intensity pyramid.
 

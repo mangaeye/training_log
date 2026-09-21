@@ -74,6 +74,48 @@ def format_run_duration(seconds):
     return f"{hours} h {minutes:02d} m" if hours else f"{minutes} m"
 
 
+def custom_zone_seconds(zone_seconds):
+    if not isinstance(zone_seconds, dict):
+        return {}
+    native = {}
+    for key, value in zone_seconds.items():
+        if str(key) not in {"1", "2", "3", "4", "5"}:
+            continue
+        try:
+            native[str(key)] = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            continue
+    return {
+        "easy": native.get("1", 0) + native.get("2", 0),
+        "tempo": native.get("3", 0),
+        "threshold": native.get("4", 0),
+        "above": native.get("5", 0),
+    }
+
+
+def weekly_zone_minutes(rows, week_start, today):
+    zone_totals = {key: 0 for key, _, _ in RUN_ZONE_PRESENTATION}
+    for row in rows:
+        if not week_start <= row[0] <= today:
+            continue
+        for activity in row[6]:
+            if str(activity.get("sport", "")).lower() != "running":
+                continue
+            for key, seconds in custom_zone_seconds(
+                activity.get("hr_zone_seconds")
+            ).items():
+                zone_totals[key] += seconds
+    return {key: int((seconds + 30) // 60) for key, seconds in zone_totals.items()}
+
+
+RUN_ZONE_PRESENTATION = (
+    ("easy", "Easy", INTENSITY_BOTTOM_STACK[0][1]),
+    ("tempo", "Tempo", INTENSITY_BOTTOM_STACK[1][1]),
+    ("threshold", "Threshold", INTENSITY_TOP_STACK[1][1]),
+    ("above", "Above threshold", INTENSITY_TOP_STACK[0][1]),
+)
+
+
 def format_date(day):
     return day.strftime("%a %d %b")
 
@@ -506,10 +548,11 @@ def weekly_intensity_markup(rows, today, account_name):
     grid_rows, grid_total = intensity_grid_rows(goal)
     row_count = len(grid_rows)
 
-    # Zone minutes are not tracked yet; treat all logged minutes as easy
-    # running until per-zone heart-rate data is available.
-    easy_minutes, tempo_minutes = minutes_completed, 0
-    above_threshold_minutes, threshold_minutes = 0, 0
+    zone_minutes = weekly_zone_minutes(rows, week_start, today)
+    easy_minutes = zone_minutes["easy"]
+    tempo_minutes = zone_minutes["tempo"]
+    threshold_minutes = zone_minutes["threshold"]
+    above_threshold_minutes = zone_minutes["above"]
 
     easy_clamped = min(easy_minutes, grid_total)
     tempo_clamped = min(tempo_minutes, grid_total - easy_clamped)
@@ -763,7 +806,8 @@ def fetch_rows(connection):
                             elapsed_duration_seconds,
                             moving_duration_seconds,
                             0
-                        )
+                        ),
+                        'hr_zone_seconds', COALESCE(hr_zone_seconds, '{}'::jsonb)
                     ) ORDER BY start_time
                 ) AS activities
             FROM activities
@@ -791,7 +835,31 @@ def activity_markup(activities):
         activity_class = "activity activity-strength" if is_strength else "activity activity-running"
         details = "" if sport in {"strength", "strength_training"} else f"<small>{distance} km · {duration}</small>"
         strength_icon = '<span class="strength-icon" aria-label="Strength activity"></span>' if is_strength else ""
-        items.append(f"<span class=\"{activity_class}\">{strength_icon}<strong>{name}</strong>{details}</span>")
+        zone_bar = ""
+        if sport == "running":
+            zone_seconds = custom_zone_seconds(activity.get("hr_zone_seconds"))
+            total_zone_seconds = sum(zone_seconds.values())
+            if total_zone_seconds:
+                segments = []
+                labels = []
+                for key, label, color in RUN_ZONE_PRESENTATION:
+                    seconds = zone_seconds[key]
+                    if not seconds:
+                        continue
+                    percentage = seconds / total_zone_seconds * 100
+                    segments.append(
+                        f'<span class="zone-segment" style="background: {color}; width: {percentage:.2f}%" '
+                        f'title="{label}: {format_run_duration(seconds)}"></span>'
+                    )
+                    labels.append(f"{label}: {format_run_duration(seconds)}")
+                zone_bar = (
+                    f'<span class="zone-bar" role="img" aria-label="Heart-rate zones: '
+                    f'{html.escape("; ".join(labels))}">'
+                    f'{"".join(segments)}</span>'
+                )
+            else:
+                zone_bar = '<span class="zone-bar zone-bar-unavailable" title="Heart-rate zone data unavailable" aria-label="Heart-rate zone data unavailable"></span>'
+        items.append(f"<span class=\"{activity_class}\">{strength_icon}<strong>{name}</strong>{zone_bar}{details}</span>")
     return "".join(items)
 
 
@@ -1027,6 +1095,9 @@ def _render_single_user(
         .activity {{ background: #e3eee8; border-left: 3px solid var(--teal); display: block; margin: 0 0 0.4rem; padding: 0.35rem; }}
         .activity-strength {{ background: #f7e5c8; border-left-color: #c8872d; }}
         .activity strong {{ display: block; font-size: 0.78rem; overflow-wrap: anywhere; }}
+        .zone-bar {{ background: var(--line); display: flex; height: 0.42rem; margin: 0.35rem 0 0.2rem; overflow: hidden; width: 100%; }}
+        .zone-segment {{ display: block; height: 100%; min-width: 1px; }}
+        .zone-bar-unavailable {{ background: repeating-linear-gradient(135deg, #d9d8cf 0, #d9d8cf 3px, #c1c2ba 3px, #c1c2ba 6px); }}
         .strength-icon {{ background-color: #f7e5c8; background-image: url("kb_icon.jpg"); background-position: center; background-repeat: no-repeat; background-size: contain; background-blend-mode: multiply; display: inline-block; height: 1.7rem; margin-right: 0.25rem; vertical-align: -0.45rem; width: 1.7rem; }}
         .activity small {{ color: var(--muted); display: block; font-size: 0.68rem; margin-top: 0.15rem; }}
         .calendar-total {{ align-items: center; background: var(--accent-soft); border: 1px solid var(--accent); display: flex; gap: 0.75rem; grid-column: 1 / -1; justify-content: space-between; padding: 0.8rem 1rem; }}
@@ -1064,6 +1135,7 @@ def _render_single_user(
             .calendar-activities .activity strong {{ display: none; }}
             .calendar-activities .strength-icon {{ margin-right: 0; }}
             .calendar-activities .activity small {{ font-size: 0.52rem; line-height: 1.15; margin-top: 0; overflow-wrap: anywhere; }}
+            .calendar-activities .zone-bar {{ height: 0.28rem; margin: 0.2rem 0 0.15rem; }}
             .calendar-total {{ align-items: flex-start; flex-direction: column; gap: 0.35rem; }}
             .calendar-total small {{ margin-left: 0.4rem; }}
         }}

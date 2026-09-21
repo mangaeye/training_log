@@ -41,6 +41,30 @@ def as_float(value: Any) -> float | None:
     return float(value) if value is not None else None
 
 
+def normalize_hr_zone_seconds(payload: dict[str, Any] | None) -> dict[str, int]:
+    if not payload:
+        return {}
+    zones = payload.get("heartRateZones")
+    if not isinstance(zones, list):
+        return {}
+    normalized = {}
+    for zone in zones:
+        if not isinstance(zone, dict):
+            continue
+        zone_number = zone.get("zoneNumber")
+        minutes = zone.get("minutes")
+        if zone_number is None or minutes is None:
+            continue
+        try:
+            zone_number = int(zone_number)
+            seconds = max(0, round(float(minutes) * 60))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= zone_number <= 5:
+            normalized[str(zone_number)] = seconds
+    return normalized
+
+
 def activity_type_key(activity: dict[str, Any]) -> str:
     activity_type = activity.get("activityType") or {}
     return str(
@@ -186,7 +210,12 @@ def upsert_daily_summary(
     )
 
 
-def upsert_activity(cur, user_id: str, activity: dict[str, Any]) -> tuple[str, str]:
+def upsert_activity(
+    cur,
+    user_id: str,
+    activity: dict[str, Any],
+    hr_zone_seconds: dict[str, int] | None = None,
+) -> tuple[str, str]:
     garmin_activity_id = str(activity.get("activityId"))
     sport = activity_type_key(activity)
     sport_type_id = get_sport_type_id(cur, sport)
@@ -197,11 +226,11 @@ def upsert_activity(cur, user_id: str, activity: dict[str, Any]) -> tuple[str, s
             start_time, activity_type, elapsed_duration_seconds,
             moving_duration_seconds, distance_meters, elevation_meters,
             average_speed, max_speed, average_heart_rate, max_heart_rate,
-            average_cadence, max_cadence, calories, steps, source_json
+            average_cadence, max_cadence, calories, steps, hr_zone_seconds, source_json
         )
         VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON CONFLICT (garmin_activity_id) DO UPDATE SET
             user_id = EXCLUDED.user_id,
@@ -221,6 +250,7 @@ def upsert_activity(cur, user_id: str, activity: dict[str, Any]) -> tuple[str, s
             max_cadence = EXCLUDED.max_cadence,
             calories = EXCLUDED.calories,
             steps = EXCLUDED.steps,
+            hr_zone_seconds = EXCLUDED.hr_zone_seconds,
             source_json = EXCLUDED.source_json
         RETURNING id
         """,
@@ -243,6 +273,7 @@ def upsert_activity(cur, user_id: str, activity: dict[str, Any]) -> tuple[str, s
             as_float(activity.get("maxRunningCadence")),
             as_int(activity.get("calories")),
             as_int(activity.get("steps")),
+            Json(hr_zone_seconds or {}),
             Json(activity),
         ),
     )
@@ -349,7 +380,24 @@ def sync_account(account_name: str, start_date: date, end_date: date):
                 ) or []
                 aggregates: dict[str, list[float]] = {}
                 for activity in activities:
-                    _, sport = upsert_activity(cur, user_id, activity)
+                    sport = activity_type_key(activity)
+                    zone_seconds = normalize_hr_zone_seconds(activity)
+                    if sport == "running" and not zone_seconds:
+                        try:
+                            details = garmin.get_activity_details(
+                                str(activity.get("activityId"))
+                            )
+                        except Exception as exc:
+                            logging.warning(
+                                "Could not fetch heart-rate zones for activity %s: %s",
+                                activity.get("activityId"),
+                                exc,
+                            )
+                        else:
+                            zone_seconds = normalize_hr_zone_seconds(details)
+                    _, sport = upsert_activity(
+                        cur, user_id, activity, hr_zone_seconds=zone_seconds
+                    )
                     activity_count += 1
                     values = aggregates.setdefault(sport, [0, 0, 0, 0])
                     values[0] += 1
