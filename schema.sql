@@ -160,3 +160,23 @@ CREATE POLICY "Users can update their own program blocks"
 
 CREATE INDEX IF NOT EXISTS idx_program_blocks_user_start_date
     ON program_blocks(user_id, start_date);
+
+-- Links a Supabase Auth user to a Garmin account_name (manga/chips), chosen
+-- by the user themselves the first time they log in on program.html.
+CREATE TABLE IF NOT EXISTS account_links (
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    account_name TEXT NOT NULL REFERENCES users(account_name),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE account_links ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view their own account link" ON account_links;
+CREATE POLICY "Users can view their own account link"
+    ON account_links FOR SELECT
+    USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can set their own account link" ON account_links;
+CREATE POLICY "Users can set their own account link"
+    ON account_links FOR INSERT
+    WITH CHECK (auth.uid() = user_id);

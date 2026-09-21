@@ -89,6 +89,19 @@
         <p class="status" id="login-status"></p>
     </section>
 
+    <section id="account-picker-section" class="hidden">
+        <h2>Which account is this?</h2>
+        <div class="field">
+            <label for="account-name-select">Account</label>
+            <select id="account-name-select">
+                <option value="manga">manga</option>
+                <option value="chips">chips</option>
+            </select>
+        </div>
+        <button id="confirm-account-button">Confirm</button>
+        <p class="status" id="account-status"></p>
+    </section>
+
     <section id="editor-section" class="hidden">
         <h2>Workout block</h2>
         <div class="field">
@@ -152,6 +165,10 @@
     const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     const loginSection = document.getElementById("login-section");
+    const accountPickerSection = document.getElementById("account-picker-section");
+    const accountNameSelect = document.getElementById("account-name-select");
+    const confirmAccountButton = document.getElementById("confirm-account-button");
+    const accountStatus = document.getElementById("account-status");
     const editorSection = document.getElementById("editor-section");
     const authStatus = document.getElementById("auth-status");
     const loginStatus = document.getElementById("login-status");
@@ -282,6 +299,32 @@
         return data.user.id;
     }
 
+    // account_links maps this Supabase Auth user to a Garmin account_name
+    // (manga/chips), chosen once by the user themselves after login.
+    async function loadAccountLink(userId) {
+        const { data, error } = await supabaseClient
+            .from("account_links")
+            .select("account_name")
+            .eq("user_id", userId)
+            .maybeSingle();
+        if (error || !data) return null;
+        return data.account_name;
+    }
+
+    async function confirmAccountLink() {
+        const userId = await getCurrentUserId();
+        if (!userId) return;
+        setStatus(accountStatus, "Saving…");
+        const { error } = await supabaseClient
+            .from("account_links")
+            .insert({ user_id: userId, account_name: accountNameSelect.value });
+        if (error) {
+            setStatus(accountStatus, error.message, "error");
+            return;
+        }
+        await refreshSessionUi();
+    }
+
     async function saveBlock(startDate, workouts, durationWeeks) {
         const userId = await getCurrentUserId();
         if (!userId) {
@@ -336,18 +379,44 @@
         setStatus(editorStatus, data ? "Loaded existing block." : "No block saved for this date yet.");
     }
 
-    function showLoggedInUi(isLoggedIn) {
+    async function loadMostRecentBlock() {
+        const userId = await getCurrentUserId();
+        if (!userId) return;
+        const { data, error } = await supabaseClient
+            .from("program_blocks")
+            .select("start_date")
+            .eq("user_id", userId)
+            .order("start_date", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (error || !data) return;
+        startDateInput.value = data.start_date;
+        await loadBlock(data.start_date);
+    }
+
+    function showLoggedInUi(isLoggedIn, hasAccountLink) {
         loginSection.classList.toggle("hidden", isLoggedIn);
-        editorSection.classList.toggle("hidden", !isLoggedIn);
+        accountPickerSection.classList.toggle("hidden", !isLoggedIn || hasAccountLink);
+        editorSection.classList.toggle("hidden", !isLoggedIn || !hasAccountLink);
     }
 
     async function refreshSessionUi() {
         const { data } = await supabaseClient.auth.getSession();
         const isLoggedIn = Boolean(data.session);
-        showLoggedInUi(isLoggedIn);
-        setStatus(authStatus, isLoggedIn ? "" : "Log in to view or edit your workout block.");
-        if (isLoggedIn && startDateInput.value) {
+        const accountName = isLoggedIn ? await loadAccountLink(data.session.user.id) : null;
+        showLoggedInUi(isLoggedIn, Boolean(accountName));
+        setStatus(
+            authStatus,
+            !isLoggedIn
+                ? "Log in to view or edit your workout block."
+                : accountName
+                ? `Logged in as ${accountName}`
+                : ""
+        );
+        if (isLoggedIn && accountName && startDateInput.value) {
             await loadBlock(startDateInput.value);
+        } else if (isLoggedIn && accountName) {
+            await loadMostRecentBlock();
         }
     }
 
@@ -363,6 +432,7 @@
     addWorkoutButton.addEventListener("click", addWorkoutFromForm);
     saveBlockButton.addEventListener("click", () => saveBlock(startDateInput.value, currentWorkouts, durationWeeksInput.value));
     startDateInput.addEventListener("change", () => loadBlock(startDateInput.value));
+    confirmAccountButton.addEventListener("click", confirmAccountLink);
 
     supabaseClient.auth.onAuthStateChange((_event, _session) => {
         refreshSessionUi();
