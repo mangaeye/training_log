@@ -43,6 +43,7 @@
         align-items: center; background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--teal);
         display: flex; gap: 0.6rem; justify-content: space-between; margin-bottom: 0.5rem; padding: 0.6rem 0.75rem;
     }
+    .workout-item.editing { border-color: var(--accent); }
     .workout-item .details { font-size: 0.85rem; }
     .workout-item .details strong { display: block; font-size: 0.95rem; }
     .workout-item button { background: transparent; border: none; color: var(--muted); font-size: 0.72rem; padding: 0.2rem 0.4rem; text-decoration: underline; }
@@ -193,6 +194,8 @@
     const blockCardBody = document.getElementById("block-card-body");
 
     let currentWorkouts = [];
+    let loadedBlockStartDate = null;
+    let editingWorkoutIndex = null;
 
     function setStatus(element, message, kind) {
         element.textContent = message || "";
@@ -245,11 +248,50 @@
         }).join("");
     }
 
+    function getBlockEndDate(startDate, durationWeeks) {
+        const weeks = parseInt(durationWeeks, 10);
+        if (!startDate || !Number.isFinite(weeks) || weeks <= 0) return null;
+        const endDate = new Date(`${startDate}T00:00:00`);
+        endDate.setDate(endDate.getDate() + (weeks * 7));
+        return endDate;
+    }
+
+    function isBlockActive() {
+        const startDate = startDateInput.value;
+        const endDate = getBlockEndDate(startDate, durationWeeksInput.value);
+        if (!startDate || !endDate) return false;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        return today >= new Date(`${startDate}T00:00:00`) && today <= endDate;
+    }
+
+    function clearWorkoutForm() {
+        workoutTypeInput.value = "";
+        workoutDurationInput.value = "";
+        workoutIntensityInput.value = "";
+        workoutStridesInput.checked = false;
+        editingWorkoutIndex = null;
+        addWorkoutButton.textContent = "Add Workout";
+    }
+
+    function editWorkout(index) {
+        if (!isBlockActive()) return;
+        const workout = currentWorkouts[index];
+        workoutTypeInput.value = workout.type || "";
+        workoutDurationInput.value = workout.duration || "";
+        workoutIntensityInput.value = workout.intensity || "";
+        workoutStridesInput.checked = Boolean(workout.strides);
+        editingWorkoutIndex = index;
+        addWorkoutButton.textContent = "Save Workout";
+        renderWorkoutList();
+    }
+
     function renderWorkoutList() {
+        const blockIsActive = isBlockActive();
         workoutList.innerHTML = "";
         currentWorkouts.forEach((workout, index) => {
             const item = document.createElement("li");
-            item.className = "workout-item" + (workout.completed ? " completed" : "");
+            item.className = "workout-item" + (workout.completed ? " completed" : "") + (editingWorkoutIndex === index ? " editing" : "");
             item.innerHTML = `
                 <div class="item-main">
                     <input type="checkbox" data-role="completed" ${workout.completed ? "checked" : ""} aria-label="Mark workout completed">
@@ -258,14 +300,21 @@
                         ${escapeHtml(workout.duration)} · ${escapeHtml(workout.intensity)}${workout.strides ? " · strides" : ""}
                     </div>
                 </div>
-                <button type="button" data-index="${index}">Remove</button>
+                <div class="actions">
+                    ${blockIsActive ? `<button type="button" data-role="edit" data-index="${index}">Edit</button>` : ""}
+                    <button type="button" data-role="remove" data-index="${index}">Remove</button>
+                </div>
             `;
             item.querySelector('[data-role="completed"]').addEventListener("change", (event) => {
                 workout.completed = event.target.checked;
                 renderWorkoutList();
             });
-            item.querySelector("button").addEventListener("click", () => {
+            const editButton = item.querySelector('[data-role="edit"]');
+            if (editButton) editButton.addEventListener("click", () => editWorkout(index));
+            item.querySelector('[data-role="remove"]').addEventListener("click", () => {
                 currentWorkouts.splice(index, 1);
+                if (editingWorkoutIndex === index) clearWorkoutForm();
+                else if (editingWorkoutIndex !== null && editingWorkoutIndex > index) editingWorkoutIndex -= 1;
                 renderWorkoutList();
                 renderBlockCard();
             });
@@ -288,17 +337,16 @@
             setStatus(editorStatus, "Type and duration are required.", "error");
             return;
         }
-        currentWorkouts.push({
+        const workout = {
             type,
             duration,
             intensity,
             strides: workoutStridesInput.checked,
-            completed: false,
-        });
-        workoutTypeInput.value = "";
-        workoutDurationInput.value = "";
-        workoutIntensityInput.value = "";
-        workoutStridesInput.checked = false;
+            completed: editingWorkoutIndex === null ? false : currentWorkouts[editingWorkoutIndex].completed,
+        };
+        if (editingWorkoutIndex === null) currentWorkouts.push(workout);
+        else currentWorkouts[editingWorkoutIndex] = workout;
+        clearWorkoutForm();
         setStatus(editorStatus, "");
         renderWorkoutList();
     }
@@ -347,21 +395,27 @@
         }
         const weeks = parseInt(durationWeeks, 10);
         setStatus(editorStatus, "Saving…");
-        const { error } = await supabaseClient
-            .from("program_blocks")
-            .upsert(
-                {
-                    user_id: userId,
-                    start_date: startDate,
-                    duration_weeks: Number.isFinite(weeks) && weeks > 0 ? weeks : 2,
-                    workouts,
-                },
-                { onConflict: "user_id,start_date" }
-            );
+        const block = {
+            user_id: userId,
+            start_date: startDate,
+            duration_weeks: Number.isFinite(weeks) && weeks > 0 ? weeks : 2,
+            workouts,
+        };
+        const request = loadedBlockStartDate
+            ? supabaseClient
+                .from("program_blocks")
+                .update(block)
+                .eq("user_id", userId)
+                .eq("start_date", loadedBlockStartDate)
+            : supabaseClient
+                .from("program_blocks")
+                .upsert(block, { onConflict: "user_id,start_date" });
+        const { error } = await request;
         if (error) {
             setStatus(editorStatus, error.message, "error");
             return;
         }
+        loadedBlockStartDate = startDate;
         setStatus(editorStatus, "Block saved.", "success");
     }
 
@@ -369,6 +423,8 @@
         const userId = await getCurrentUserId();
         if (!userId || !startDate) {
             currentWorkouts = [];
+            loadedBlockStartDate = null;
+            clearWorkoutForm();
             renderWorkoutList();
             return;
         }
@@ -384,6 +440,8 @@
             return;
         }
         currentWorkouts = (data && data.workouts) || [];
+        loadedBlockStartDate = data ? startDate : null;
+        clearWorkoutForm();
         durationWeeksInput.value = data ? data.duration_weeks : 2;
         renderWorkoutList();
         setStatus(editorStatus, data ? "Loaded existing block." : "No block saved for this date yet.");
@@ -442,6 +500,7 @@
     addWorkoutButton.addEventListener("click", addWorkoutFromForm);
     saveBlockButton.addEventListener("click", () => saveBlock(startDateInput.value, currentWorkouts, durationWeeksInput.value));
     startDateInput.addEventListener("change", () => loadBlock(startDateInput.value));
+    durationWeeksInput.addEventListener("change", renderWorkoutList);
     confirmAccountButton.addEventListener("click", confirmAccountLink);
 
     supabaseClient.auth.onAuthStateChange((_event, _session) => {

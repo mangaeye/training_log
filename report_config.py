@@ -16,4 +16,4 @@ GOAL_CARD_VIEWS = {
 INTENSITY_GOAL_MINUTES = 180
 
 # Start date for the Long Run route progress tracker.
-LONG_RUN_EPOCH = date(2026, 9, 15)
+LONG_RUN_EPOCH = date(2026, 9, 22)

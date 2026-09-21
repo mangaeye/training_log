@@ -411,7 +411,9 @@ def goal_cards_markup(rows, today, account_name):
         "two_week_run_count": two_week_run_goal_markup,
         "weekly_run_minutes": weekly_run_minutes_goal_markup,
         "weekly_strength": weekly_strength_goal_markup,
-        "weekly_intensity": weekly_intensity_markup,
+        "weekly_intensity": lambda card_rows, card_today: weekly_intensity_markup(
+            card_rows, card_today, account_name
+        ),
     }
     return [
         card_builders[view](rows, today)
@@ -486,7 +488,7 @@ def intensity_trapezoid_points(y_top, y_bottom):
     )
 
 
-def weekly_intensity_markup(rows, today):
+def weekly_intensity_markup(rows, today, account_name):
     week_start = today - timedelta(days=today.weekday())
     minutes_completed = int(
         (
@@ -526,7 +528,7 @@ def weekly_intensity_markup(rows, today):
     for position, row in enumerate(grid_rows):
         y_top, y_bottom = row["y_top"], row["y_bottom"]
         capacity = row["capacity"]
-        clip_id = f"intensity-row-{position}"
+        clip_id = f"intensity-{account_name}-row-{position}"
         clip_defs.append(
             f'<clipPath id="{clip_id}"><polygon points="'
             f'{intensity_trapezoid_points(y_top, y_bottom)}"/></clipPath>'
@@ -1088,8 +1090,8 @@ def _render_single_user(
             authChips.forEach((authChip) => {{
                 authChip.classList.toggle("signed-in", isSignedIn);
                 authChip.innerHTML = isSignedIn
-                    ? "Signed in - <a href=\"program.html\">manage workout block</a>"
-                    : "Not signed in - <a href=\"program.html\">sign in to manage workout block</a>";
+                    ? 'Signed in - <a href="program.html">manage workout block</a>'
+                    : 'Not signed in - <a href="program.html">sign in to manage workout block</a>';
             }});
         }}
 
