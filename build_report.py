@@ -453,11 +453,12 @@ def pace_by_hr_markup(rows, today, zone_settings):
         )
 
     width, height = 340, 200
-    left, right, top, bottom = 42, 14, 14, 32
+    left, right, top, bottom = 50, 14, 14, 32
     plot_width = width - left - right
     plot_height = height - top - bottom
-    hr_min = floors[0]
-    hr_max = max(maximum, hr_min + 1)
+    data_hr_values = [hr for hr, _ in points]
+    hr_min = min(floors[0], min(data_hr_values)) - 2
+    hr_max = max(maximum, max(data_hr_values)) + 2
     pace_values = [pace for _, pace in points]
     pace_min, pace_max = min(pace_values), max(pace_values)
     if pace_min == pace_max:
@@ -471,6 +472,23 @@ def pace_by_hr_markup(rows, today, zone_settings):
         y = top + (pace_seconds_per_km - pace_min) / (pace_max - pace_min) * plot_height
         return x, y
 
+    def hr_to_x(value):
+        return left + (value - hr_min) / (hr_max - hr_min) * plot_width
+
+    zone_bands = []
+    for color, band_start, band_end in (
+        (INTENSITY_BOTTOM_STACK[0][1], floors[0], floors[2]),
+        (INTENSITY_BOTTOM_STACK[1][1], floors[2], floors[3]),
+        (INTENSITY_TOP_STACK[1][1], floors[3], floors[4]),
+        (INTENSITY_TOP_STACK[0][1], floors[4], maximum),
+    ):
+        x_start = hr_to_x(band_start)
+        x_end = hr_to_x(band_end)
+        zone_bands.append(
+            f'<rect x="{x_start:.1f}" y="{top}" width="{max(x_end - x_start, 0):.1f}" '
+            f'height="{plot_height:.1f}" fill="{color}" fill-opacity="0.3"></rect>'
+        )
+
     grid = []
     for value in list(floors) + [maximum]:
         x = left + (value - hr_min) / (hr_max - hr_min) * plot_width
@@ -479,13 +497,22 @@ def pace_by_hr_markup(rows, today, zone_settings):
             'stroke="#cfd1c6" stroke-width="1"></line>'
             f'<text x="{x:.1f}" y="{height - bottom + 14}" text-anchor="middle">{value}</text>'
         )
+    for fraction in (0, 0.5, 1):
+        pace_value = pace_min + (pace_max - pace_min) * fraction
+        y = top + (pace_value - pace_min) / (pace_max - pace_min) * plot_height
+        pace_label = format_pace(pace_value).replace(" /km", "")
+        grid.append(
+            f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" '
+            'stroke="#cfd1c6" stroke-width="1"></line>'
+            f'<text x="{left - 7}" y="{y + 3:.1f}" text-anchor="end">{pace_label}</text>'
+        )
 
     circles = []
     for hr, pace_seconds_per_km in sorted(points):
         x, y = point_position(hr, pace_seconds_per_km)
         title = html.escape(f"HR: {hr:.0f} bpm; Pace: {format_pace(pace_seconds_per_km)}")
         circles.append(
-            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" '
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" '
             'fill="#1b6c68" stroke="#171b19" stroke-width="1">'
             f'<title>{title}</title></circle>'
         )
@@ -493,6 +520,7 @@ def pace_by_hr_markup(rows, today, zone_settings):
     svg = (
         f'<svg class="run-scatter" viewBox="0 0 {width} {height}" role="img" '
         f'aria-label="Average running pace versus heart rate for the last 28 days">'
+        f'{"".join(zone_bands)}'
         f'{"".join(grid)}'
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" stroke="#171b19"></line>'
         f'<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" stroke="#171b19"></line>'
@@ -1282,7 +1310,8 @@ def fetch_rows(connection):
                             0
                         ),
                         'average_heart_rate', average_heart_rate,
-                        'hr_zone_seconds', COALESCE(hr_zone_seconds, '{}'::jsonb)
+                        'hr_zone_seconds', COALESCE(hr_zone_seconds, '{}'::jsonb),
+                        'pace_by_hr_bucket', COALESCE(pace_by_hr_bucket, '{}'::jsonb)
                     ) ORDER BY start_time
                 ) AS activities
             FROM activities

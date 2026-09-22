@@ -135,6 +135,7 @@ def hr_zone_seconds_from_details(
 def pace_by_hr_bucket_from_details(
     details: dict[str, Any] | None,
 ) -> dict[str, dict[str, float]]:
+    warmup_exclude_seconds = 180
     if not details:
         return {}
     descriptors = details.get("metricDescriptors") or []
@@ -161,6 +162,7 @@ def pace_by_hr_bucket_from_details(
     buckets: dict[str, list[float]] = {}
     previous_interval = 1.0
     previous_distance = None
+    start_timestamp = None
     for position, sample in enumerate(metrics):
         required_index = max(
             index for index in (heart_rate_index, timestamp_index, speed_index, distance_index)
@@ -177,6 +179,8 @@ def pace_by_hr_bucket_from_details(
             timestamp = float(timestamp)
         except (TypeError, ValueError):
             continue
+        if start_timestamp is None:
+            start_timestamp = timestamp
         interval = previous_interval
         if position + 1 < len(metrics):
             next_timestamp = metrics[position + 1][timestamp_index]
@@ -204,6 +208,9 @@ def pace_by_hr_bucket_from_details(
                     distance_delta = max(0.0, distance - previous_distance)
                 previous_distance = distance
         if not distance_delta or distance_delta <= 0:
+            continue
+
+        if (timestamp - start_timestamp) / 1000 < warmup_exclude_seconds:
             continue
 
         bucket = str(int(heart_rate // 3) * 3)
