@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
     garmin_user_id TEXT UNIQUE,
     email TEXT UNIQUE,
     display_name TEXT,
+    hr_zone_settings JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -79,6 +80,9 @@ ALTER TABLE daily_summaries
 
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS account_name TEXT NOT NULL DEFAULT 'manga';
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS hr_zone_settings JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 ALTER TABLE activities
     ADD COLUMN IF NOT EXISTS hr_zone_seconds JSONB NOT NULL DEFAULT '{}'::jsonb;

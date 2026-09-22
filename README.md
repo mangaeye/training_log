@@ -24,6 +24,12 @@ The sync upserts daily summaries, activities, sport totals, raw API payloads, an
 
 Running zone data is fetched from Garmin's activity-detail endpoint when it is not already present in the activity summary. A detail-fetch failure does not prevent the activity itself from syncing. Because finalized historical dates are skipped, run an explicit historical sync range after this feature is deployed if older activities need zone data refreshed.
 
+To enrich finalized historical activities, add `--resync` to the requested date range. This is intended as a one-time backfill; normal daily syncs should continue without it:
+
+```bash
+python sync_garmin_to_supabase.py --start-date 2026-09-01 --end-date 2026-09-22 --resync
+```
+
 If the direct database hostname is unreachable, use the Supabase pooler connection string from Database Settings instead.
 
 ## GitHub Pages report

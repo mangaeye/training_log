@@ -8,8 +8,8 @@ tuple to hide all goal cards for an account.
 from datetime import date
 
 GOAL_CARD_VIEWS = {
-    "manga": ("weekly_intensity",),
-    "chips": ("weekly_intensity",),
+    "manga": (),
+    "chips": (),
 }
 
 # Total weekly training minutes needed to fill the intensity pyramid.

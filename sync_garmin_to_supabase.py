@@ -65,6 +65,73 @@ def normalize_hr_zone_seconds(payload: dict[str, Any] | None) -> dict[str, int]:
     return normalized
 
 
+def hr_zone_seconds_from_details(
+    details: dict[str, Any] | None,
+    zone_settings: list[dict[str, Any]] | None,
+) -> dict[str, int]:
+    if not details or not zone_settings:
+        return {}
+    settings = next(
+        (
+            item for item in zone_settings
+            if isinstance(item, dict) and item.get("sport") in {"DEFAULT", "RUNNING"}
+        ),
+        zone_settings[0] if isinstance(zone_settings[0], dict) else None,
+    )
+    if not settings:
+        return {}
+    try:
+        floors = [float(settings[f"zone{index}Floor"]) for index in range(1, 6)]
+    except (KeyError, TypeError, ValueError):
+        return {}
+    descriptors = details.get("metricDescriptors") or []
+    descriptor_indexes = {
+        descriptor.get("key"): index
+        for index, descriptor in enumerate(descriptors)
+        if isinstance(descriptor, dict)
+    }
+    heart_rate_index = descriptor_indexes.get("directHeartRate")
+    timestamp_index = descriptor_indexes.get("directTimestamp")
+    metrics = [
+        item.get("metrics")
+        for item in details.get("activityDetailMetrics", [])
+        if isinstance(item, dict) and isinstance(item.get("metrics"), list)
+    ]
+    if heart_rate_index is None or timestamp_index is None or not metrics:
+        return {}
+
+    zone_seconds = {str(index): 0.0 for index in range(1, 6)}
+    previous_interval = 1.0
+    for position, sample in enumerate(metrics):
+        if len(sample) <= max(heart_rate_index, timestamp_index):
+            continue
+        heart_rate = sample[heart_rate_index]
+        timestamp = sample[timestamp_index]
+        if heart_rate is None or timestamp is None:
+            continue
+        try:
+            heart_rate = float(heart_rate)
+            timestamp = float(timestamp)
+        except (TypeError, ValueError):
+            continue
+        interval = previous_interval
+        if position + 1 < len(metrics):
+            next_timestamp = metrics[position + 1][timestamp_index]
+            try:
+                interval = (float(next_timestamp) - timestamp) / 1000
+            except (TypeError, ValueError):
+                interval = previous_interval
+        if not 0 < interval <= 10:
+            interval = previous_interval
+        previous_interval = interval
+        zone_number = max(
+            (index for index, floor in enumerate(floors, start=1) if heart_rate >= floor),
+            default=1,
+        )
+        zone_seconds[str(zone_number)] += interval
+    return {key: round(value) for key, value in zone_seconds.items() if value > 0}
+
+
 def activity_type_key(activity: dict[str, Any]) -> str:
     activity_type = activity.get("activityType") or {}
     return str(
@@ -134,21 +201,27 @@ def existing_summary_statuses(
     return {row[0]: row[1] for row in cur.fetchall()}
 
 
-def upsert_user(cur, profile: dict[str, Any], account_name: str) -> str:
+def upsert_user(
+    cur,
+    profile: dict[str, Any],
+    account_name: str,
+    zone_settings: list[dict[str, Any]] | None = None,
+) -> str:
     garmin_user_id = str(profile.get("userId") or profile.get("id") or "garmin-user")
     email = profile.get("email") or os.getenv(f"GARMIN_{account_name.upper()}_EMAIL")
     display_name = profile.get("displayName") or profile.get("fullName")
     cur.execute(
         """
-        INSERT INTO users (account_name, garmin_user_id, email, display_name)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO users (account_name, garmin_user_id, email, display_name, hr_zone_settings)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (garmin_user_id) DO UPDATE SET
             account_name = EXCLUDED.account_name,
             email = COALESCE(EXCLUDED.email, users.email),
-            display_name = COALESCE(EXCLUDED.display_name, users.display_name)
+            display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+            hr_zone_settings = COALESCE(EXCLUDED.hr_zone_settings, users.hr_zone_settings)
         RETURNING id
         """,
-        (account_name, garmin_user_id, email, display_name),
+        (account_name, garmin_user_id, email, display_name, Json(zone_settings) if zone_settings is not None else None),
     )
     return str(cur.fetchone()[0])
 
@@ -316,18 +389,28 @@ def upsert_daily_sport_total(
     )
 
 
-def sync_account(account_name: str, start_date: date, end_date: date):
+def sync_account(
+    account_name: str,
+    start_date: date,
+    end_date: date,
+    resync: bool = False,
+):
     garmin = init_garmin(account_name)
     if garmin is None:
         return
     profile = garmin.get_user_profile()
+    try:
+        zone_settings = garmin.get_heart_rate_zones()
+    except Exception as exc:
+        logging.warning("Could not fetch Garmin heart-rate zone settings: %s", exc)
+        zone_settings = []
     conn = get_connection()
     activity_count = 0
     summary_count = 0
     try:
         with conn.cursor() as cur:
             ensure_schema(cur)
-            user_id = upsert_user(cur, profile, account_name)
+            user_id = upsert_user(cur, profile, account_name, zone_settings)
             stored_statuses = existing_summary_statuses(
                 cur, user_id, start_date, end_date
             )
@@ -347,7 +430,8 @@ def sync_account(account_name: str, start_date: date, end_date: date):
             dates_to_sync = [
                 start_date + timedelta(days=offset)
                 for offset in range((end_date - start_date).days + 1)
-                if (
+                if resync
+                or (
                     start_date + timedelta(days=offset) not in stored_statuses
                     or start_date + timedelta(days=offset) in refresh_dates
                 )
@@ -395,6 +479,10 @@ def sync_account(account_name: str, start_date: date, end_date: date):
                             )
                         else:
                             zone_seconds = normalize_hr_zone_seconds(details)
+                            if not zone_seconds:
+                                zone_seconds = hr_zone_seconds_from_details(
+                                    details, zone_settings
+                                )
                     _, sport = upsert_activity(
                         cur, user_id, activity, hr_zone_seconds=zone_seconds
                     )
@@ -432,9 +520,9 @@ def sync_account(account_name: str, start_date: date, end_date: date):
     )
 
 
-def sync_range(start_date: date, end_date: date):
+def sync_range(start_date: date, end_date: date, resync: bool = False):
     for account_name in ACCOUNT_NAMES:
-        sync_account(account_name, start_date, end_date)
+        sync_account(account_name, start_date, end_date, resync=resync)
 
 
 def main():
@@ -446,6 +534,11 @@ def main():
         "--days",
         type=int,
         help="Sync this many days ending on --end-date; overrides the default start date.",
+    )
+    parser.add_argument(
+        "--resync",
+        action="store_true",
+        help="Refresh all dates in the requested range, including finalized historical dates.",
     )
     args = parser.parse_args()
 
@@ -462,7 +555,7 @@ def main():
         parser.error("--start-date must be on or before --end-date")
 
     try:
-        sync_range(start_date, end_date)
+        sync_range(start_date, end_date, resync=args.resync)
     except (GarminConnectTooManyRequestsError, GarminConnectAuthenticationError) as exc:
         print(f"Garmin authentication/rate-limit error: {exc}", file=sys.stderr)
         raise SystemExit(1)

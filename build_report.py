@@ -2,7 +2,6 @@ import html
 import json
 import math
 import os
-import shutil
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,7 +15,6 @@ from report_config import GOAL_CARD_VIEWS, INTENSITY_GOAL_MINUTES, LONG_RUN_EPOC
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "site" / "index.html"
 ROUTE_KML = ROOT / "route.kml"
-KB_ICON = ROOT / "kb_icon.jpg"
 ACCOUNT_NAMES = ("manga", "chips")
 # Zone stacks for the intensity pyramid: bottom stack fills up from the base,
 # top stack fills down from the apex. Each tuple is (label, color), ordered
@@ -116,6 +114,230 @@ RUN_ZONE_PRESENTATION = (
 )
 
 
+def recent_intensity_markup(rows):
+    weekly_totals = {}
+    for row in rows:
+        week_start = row[0] - timedelta(days=row[0].weekday())
+        week = weekly_totals.setdefault(
+            week_start,
+            {
+                "has_run": False,
+                "run_seconds": 0,
+                **{key: 0 for key, _, _ in RUN_ZONE_PRESENTATION},
+            },
+        )
+        for activity in row[6]:
+            if str(activity.get("sport", "")).lower() != "running":
+                continue
+            week["has_run"] = True
+            week["run_seconds"] += max(
+                0, int(activity.get("duration_seconds", 0) or 0)
+            )
+            for key, seconds in custom_zone_seconds(
+                activity.get("hr_zone_seconds")
+            ).items():
+                week[key] += seconds
+
+    longest_week_seconds = max(
+        (
+            week["run_seconds"]
+            for week in weekly_totals.values()
+            if week["has_run"]
+        ),
+        default=0,
+    )
+    items = []
+    for week_start in sorted(weekly_totals, reverse=True):
+        week = weekly_totals[week_start]
+        if not week["has_run"]:
+            continue
+        bar_width = (
+            week["run_seconds"] / longest_week_seconds * 100
+            if longest_week_seconds
+            else 100
+        )
+        zone_seconds = {key: week[key] for key, _, _ in RUN_ZONE_PRESENTATION}
+        total_seconds = sum(zone_seconds.values())
+        if total_seconds:
+            segments = []
+            labels = []
+            for key, label, color in RUN_ZONE_PRESENTATION:
+                seconds = zone_seconds[key]
+                if not seconds:
+                    continue
+                percentage = seconds / total_seconds * 100
+                segments.append(
+                    f'<span class="zone-segment" style="background: {color}; width: {percentage:.2f}%" '
+                    f'title="{label}: {format_run_duration(seconds)} ({percentage:.1f}%)"></span>'
+                )
+                labels.append(f"{label}: {format_run_duration(seconds)}")
+            bar = (
+                f'<span class="zone-bar" role="img" aria-label="Week '
+                f'{week_start.isocalendar().week} heart-rate zones: '
+                f'{html.escape("; ".join(labels))}" '
+                f'style="width: {bar_width:.2f}%">'
+                f'{"".join(segments)}</span>'
+            )
+        else:
+            bar = (
+                '<span class="zone-bar zone-bar-unavailable" '
+                'title="Heart-rate zone data unavailable" '
+                f'aria-label="Heart-rate zone data unavailable" '
+                f'style="width: {bar_width:.2f}%"></span>'
+            )
+        items.append(
+            f'<div class="recent-intensity-week">'
+            f'<strong>Week {week_start.isocalendar().week}</strong>{bar}'
+            f'<small class="recent-intensity-total">{int((week["run_seconds"] + 30) // 60)} min</small>'
+            f'</div>'
+        )
+
+    if not items:
+        items.append('<span class="empty-day">No running data</span>')
+    return (
+        '<article class="summary-card recent-intensity-card">'
+        "<h3>Recent Intensity &amp; Volume</h3>"
+        f'<div class="recent-intensity-list">{"".join(items)}</div>'
+        "</article>"
+    )
+
+
+def run_scatter_markup(rows, today):
+    points = []
+    start_date = today - timedelta(days=27)
+    for row in rows:
+        if not start_date <= row[0] <= today:
+            continue
+        for activity in row[6]:
+            if str(activity.get("sport", "")).lower() != "running":
+                continue
+            try:
+                distance_km = float(activity.get("distance_meters", 0) or 0) / 1000
+                average_hr = float(activity["average_heart_rate"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if distance_km <= 0 or average_hr <= 0:
+                continue
+            points.append((distance_km, average_hr, row[0], activity.get("name", "Run")))
+
+    if not points:
+        return (
+            '<article class="summary-card run-scatter-card">'
+            "<h3>Run Distance vs Average HR</h3>"
+            '<p class="goal-message">No running distance and heart-rate data in the last 28 days.</p>'
+            "</article>"
+        )
+
+    width, height = 340, 200
+    left, right, top, bottom = 42, 14, 14, 32
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    max_distance = max(point[0] for point in points)
+    min_hr = min(point[1] for point in points)
+    max_hr = max(point[1] for point in points)
+    distance_scale = max(max_distance * 1.1, 1)
+    hr_padding = max((max_hr - min_hr) * 0.15, 3)
+    hr_min = max(0, min_hr - hr_padding)
+    hr_max = max_hr + hr_padding
+
+    def point_position(distance_km, average_hr):
+        x = left + distance_km / distance_scale * plot_width
+        y = top + (hr_max - average_hr) / (hr_max - hr_min) * plot_height
+        return x, y
+
+    grid = []
+    for value in (hr_min, hr_max):
+        y = top + (hr_max - value) / (hr_max - hr_min) * plot_height
+        grid.append(
+            f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" '
+            'stroke="#cfd1c6" stroke-width="1"></line>'
+            f'<text x="{left - 7}" y="{y + 3:.1f}" text-anchor="end">{value:.0f}</text>'
+        )
+    circles = []
+    for distance_km, average_hr, activity_date, name in points:
+        x, y = point_position(distance_km, average_hr)
+        is_longest = distance_km == max_distance
+        radius = 6 if is_longest else 4
+        title = html.escape(
+            f"Run date: {activity_date.strftime('%d %b %Y')}; "
+            f"Distance: {distance_km:.2f} km; Average HR: {average_hr:.0f} bpm"
+        )
+        point_markup = (
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius}" '
+            f'fill="{"#1b6c68" if is_longest else "#ef6546"}" stroke="#171b19" stroke-width="1">'
+            f'<title>{title}</title></circle>'
+        )
+        circles.append(point_markup)
+    svg = (
+        f'<svg class="run-scatter" viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Running distance versus average heart rate for the last 28 days">'
+        f'{"".join(grid)}'
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" stroke="#171b19"></line>'
+        f'<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" stroke="#171b19"></line>'
+        f'<text x="{left}" y="{height - 8}">0 km</text>'
+        f'<text x="{width - right}" y="{height - 8}" text-anchor="end">{distance_scale:.1f} km</text>'
+        f'<text x="{width / 2}" y="{height - 8}" text-anchor="middle">Distance</text>'
+        f'<text x="12" y="{height / 2}" text-anchor="middle" transform="rotate(-90 12 {height / 2})">Average HR (bpm)</text>'
+        f'{"".join(circles)}</svg>'
+    )
+    return (
+        '<article class="summary-card run-scatter-card">'
+        "<h3>Run Distance vs Average HR</h3>"
+        f'<div class="run-scatter-shell">{svg}'
+        f'<aside class="longest-run-note"><strong>Longest Run</strong>'
+        f'<span>{max_distance:.2f} km</span></aside></div>'
+        '<p class="goal-message">Runs from the last 28 days with distance and average HR data.</p>'
+        "</article>"
+    )
+
+
+def zone_legend_markup(zone_settings):
+    settings = next(
+        (
+            item for item in (zone_settings or [])
+            if isinstance(item, dict) and item.get("sport") in {"DEFAULT", "RUNNING"}
+        ),
+        next((item for item in (zone_settings or []) if isinstance(item, dict)), None),
+    )
+    if not settings:
+        return (
+            '<article class="summary-card zone-legend-card">'
+            "<h3>Zone mapping</h3>"
+            '<p class="goal-message">Garmin zone settings are not available yet.</p>'
+            "</article>"
+        )
+    try:
+        floors = [int(settings[f"zone{index}Floor"]) for index in range(1, 6)]
+        maximum = int(settings["maxHeartRateUsed"])
+    except (KeyError, TypeError, ValueError):
+        return (
+            '<article class="summary-card zone-legend-card">'
+            "<h3>Zone mapping</h3>"
+            '<p class="goal-message">Garmin zone settings are incomplete.</p>'
+            "</article>"
+        )
+
+    mappings = (
+        ("Easy", "Garmin Zones 1 + 2", INTENSITY_BOTTOM_STACK[0][1], floors[0], floors[2] - 1),
+        ("Tempo", "Garmin Zone 3", INTENSITY_BOTTOM_STACK[1][1], floors[2], floors[3] - 1),
+        ("Threshold", "Garmin Zone 4", INTENSITY_TOP_STACK[1][1], floors[3], floors[4] - 1),
+        ("VO2max", "Garmin Zone 5", INTENSITY_TOP_STACK[0][1], floors[4], maximum),
+    )
+    items = []
+    for label, source, color, floor, ceiling in mappings:
+        items.append(
+            f'<div class="zone-legend-row">'
+            f'<span class="intensity-swatch" style="background: {color}"></span>'
+            f'<strong>{label}</strong><small>{source} · {floor}-{ceiling} bpm</small></div>'
+        )
+    return (
+        '<article class="summary-card zone-legend-card">'
+        "<h3>Zone mapping</h3>"
+        f'<div class="zone-legend-list">{"".join(items)}</div>'
+        "</article>"
+    )
+
+
 def format_date(day):
     return day.strftime("%a %d %b")
 
@@ -210,7 +432,11 @@ def long_run_markup(
     )
     arrival_date = today + timedelta(days=days_remaining) if days_remaining is not None else None
     finished = completed_meters >= total_race_distance
-    completed_value = "FINISHED!" if finished else f"{format_whole_distance(completed_meters)} km"
+    completed_value = (
+        f"FINISHED! ({completed_meters / 1000:.1f} km)"
+        if finished
+        else f"{completed_meters / 1000:.1f} km"
+    )
     arrival_value = "ARRIVED!" if finished else (arrival_date.strftime('%a %d %b %Y') if arrival_date else '-')
     map_id = "long-run-map-" + "".join(
         character for character in f"{account_name}-{today}" if character.isalnum()
@@ -225,19 +451,47 @@ def long_run_markup(
         yesterday_point = route_progress_point(
             route_points, completed_by_account_yesterday.get(marker_account, 0)
         )
+        completed_km = completed_by_account.get(marker_account, 0) / 1000
+        other_account = next(
+            account for account in marker_names if account != marker_account
+        )
+        difference_km = (
+            completed_by_account.get(marker_account, 0)
+            - completed_by_account.get(other_account, 0)
+        ) / 1000
+        if abs(difference_km) < 0.05:
+            comparison = "level with the other user"
+        elif difference_km > 0:
+            comparison = f"{difference_km:.1f} km ahead of {other_account.title()}"
+        else:
+            comparison = f"{abs(difference_km):.1f} km behind {other_account.title()}"
+        tooltip = (
+            f"{marker_account.title()}: {completed_km:.1f} km completed; "
+            f"{comparison}"
+        )
+        current_icon = (
+            "{icon: L.divIcon({className: 'runner-marker runner-marker-"
+            + marker_account
+            + "', html: '<span>"
+            + marker_name
+            + "</span>', iconSize: [28, 28], iconAnchor: [14, 14]})}"
+        )
+        shadow_icon = (
+            "{icon: L.divIcon({className: 'runner-marker runner-marker-"
+            + marker_account
+            + " runner-marker-shadow', html: '<span>"
+            + marker_name
+            + "</span>', iconSize: [28, 28], iconAnchor: [14, 14]})}"
+        )
         if marker_point:
             marker_scripts.append(
                 f"const marker{marker_name.upper()} = L.marker({json.dumps(marker_point)}, "
-                f"{{icon: L.divIcon({{className: 'runner-marker runner-marker-{marker_account}', html: '<span>{marker_name}</span>', "
-                "iconSize: [28, 28], iconAnchor: [14, 14]})}).addTo(map).bindTooltip('"
-                f"{marker_account.title()}');"
+                f"{current_icon}).addTo(map).bindTooltip({json.dumps(tooltip)});"
             )
         if yesterday_point:
             marker_scripts.append(
                 f"L.marker({json.dumps(yesterday_point)}, "
-                f"{{icon: L.divIcon({{className: 'runner-marker runner-marker-{marker_account} runner-marker-shadow', html: '<span>{marker_name}</span>', "
-                "iconSize: [28, 28], iconAnchor: [14, 14]})}).addTo(map).bindTooltip('"
-                f"{marker_account.title()} yesterday');"
+                f"{shadow_icon}).addTo(map).bindTooltip({json.dumps(tooltip + ' (yesterday position)')});"
             )
     marker_script = "".join(marker_scripts)
     current_marker_name = marker_names.get(account_name, "m").upper()
@@ -276,7 +530,7 @@ def long_run_markup(
         "<details class=\"long-run\" open><summary>The Long Run</summary>"
         "<div class=\"long-run-content\"><dl class=\"long-run-grid\">"
         f"<div><dt>Start date</dt><dd>{epoch.strftime('%a %d %b %Y')}</dd></div>"
-        f"<div><dt>Total race distance</dt><dd>{format_whole_distance(total_race_distance)} km</dd></div>"
+        f"<div><dt>Total race distance</dt><dd>{total_race_distance / 1000:.1f} km</dd></div>"
         f"<div><dt>Km completed</dt><dd>{completed_value}</dd></div>"
         f"<div><dt>Days remaining</dt><dd>{days_remaining if days_remaining is not None else '-'} </dd></div>"
         f"<div><dt>Estimated day of arrival</dt><dd>{arrival_value}</dd></div>"
@@ -783,7 +1037,8 @@ def fetch_rows(connection):
             COALESCE(dst.activity_count, 0) AS run_activities,
             COALESCE(dst.total_distance_meters, 0) AS run_distance_meters,
             COALESCE(dst.total_duration_seconds, 0) AS run_duration_seconds,
-            COALESCE(activity_days.activities, '[]'::jsonb) AS activities
+            COALESCE(activity_days.activities, '[]'::jsonb) AS activities,
+            COALESCE(u.hr_zone_settings, '[]'::jsonb) AS hr_zone_settings
         FROM daily_summaries AS ds
         JOIN users AS u
             ON u.id = ds.user_id
@@ -807,6 +1062,7 @@ def fetch_rows(connection):
                             moving_duration_seconds,
                             0
                         ),
+                        'average_heart_rate', average_heart_rate,
                         'hr_zone_seconds', COALESCE(hr_zone_seconds, '{}'::jsonb)
                     ) ORDER BY start_time
                 ) AS activities
@@ -834,7 +1090,7 @@ def activity_markup(activities):
         is_strength = sport in {"strength", "strength_training"}
         activity_class = "activity activity-strength" if is_strength else "activity activity-running"
         details = "" if sport in {"strength", "strength_training"} else f"<small>{distance} km · {duration}</small>"
-        strength_icon = '<span class="strength-icon" aria-label="Strength activity"></span>' if is_strength else ""
+        strength_icon = ""
         zone_bar = ""
         if sport == "running":
             zone_seconds = custom_zone_seconds(activity.get("hr_zone_seconds"))
@@ -904,6 +1160,7 @@ def week_calendar(rows, start_date, end_date):
 def _render_single_user(
     rows,
     account_name,
+    zone_settings,
     completed_by_account,
     completed_by_account_yesterday,
     generated_at,
@@ -927,6 +1184,9 @@ def _render_single_user(
             "</dl></article>"
         )
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
+    summary_cards.append(recent_intensity_markup(rows))
+    summary_cards.append(run_scatter_markup(rows, today))
+    summary_cards.append(zone_legend_markup(zone_settings))
     summary_cards.append(strength_pyramid_markup(rows, today))
 
     grouped = OrderedDict()
@@ -1036,6 +1296,23 @@ def _render_single_user(
         .intensity-labels {{ display: flex; flex: 1; flex-direction: column; gap: 0.5rem; justify-content: center; }}
         .intensity-label {{ align-items: center; display: flex; font: 600 0.72rem "DM Sans", sans-serif; gap: 0.4rem; }}
         .intensity-swatch {{ border: 1px solid var(--ink); display: inline-block; flex: 0 0 auto; height: 0.6rem; width: 0.6rem; }}
+        .recent-intensity-card {{ grid-column: span 2; }}
+        .recent-intensity-list {{ display: grid; gap: 0.6rem; margin-top: 0.8rem; }}
+        .recent-intensity-week {{ align-items: center; display: grid; gap: 0.7rem; grid-template-columns: 4.2rem minmax(0, 1fr) auto; }}
+        .recent-intensity-week strong {{ font: 600 0.72rem "Space Grotesk", sans-serif; white-space: nowrap; }}
+        .recent-intensity-total {{ color: var(--muted); font-size: 0.68rem; white-space: nowrap; }}
+        .zone-legend-card {{ grid-column: span 1; padding: 0.85rem; }}
+        .zone-legend-list {{ display: grid; gap: 0.28rem; margin-top: 0.55rem; }}
+        .zone-legend-row {{ align-items: center; display: grid; gap: 0.35rem; grid-template-columns: 0.55rem 4.4rem minmax(0, 1fr); }}
+        .zone-legend-row strong {{ font: 600 0.68rem "Space Grotesk", sans-serif; }}
+        .zone-legend-row small {{ color: var(--muted); font-size: 0.64rem; }}
+        .run-scatter-card {{ grid-column: span 2; }}
+        .run-scatter-shell {{ align-items: center; display: flex; gap: 0.8rem; margin-top: 0.7rem; }}
+        .run-scatter {{ flex: 1 1 auto; min-width: 0; }}
+        .run-scatter text {{ fill: var(--muted); font: 0.62rem "DM Sans", sans-serif; }}
+        .longest-run-note {{ border-left: 2px solid var(--teal); display: grid; gap: 0.15rem; padding-left: 0.7rem; white-space: nowrap; }}
+        .longest-run-note strong {{ color: var(--teal); font: 600 0.72rem "Space Grotesk", sans-serif; }}
+        .longest-run-note span {{ font: 700 1.1rem "Space Grotesk", sans-serif; }}
         .trail-card {{ border-top-color: #517d43 !important; grid-column: span 2; }}
         .trail-message {{ color: var(--muted); font-size: 0.82rem; margin: 0.7rem 0; min-height: 2.4em; }}
         .trail-grid {{ display: grid; gap: 0.08rem; grid-template-columns: repeat(42, minmax(0, 1fr)); }}
@@ -1098,7 +1375,6 @@ def _render_single_user(
         .zone-bar {{ background: var(--line); display: flex; height: 0.42rem; margin: 0.35rem 0 0.2rem; overflow: hidden; width: 100%; }}
         .zone-segment {{ display: block; height: 100%; min-width: 1px; }}
         .zone-bar-unavailable {{ background: repeating-linear-gradient(135deg, #d9d8cf 0, #d9d8cf 3px, #c1c2ba 3px, #c1c2ba 6px); }}
-        .strength-icon {{ background-color: #f7e5c8; background-image: url("kb_icon.jpg"); background-position: center; background-repeat: no-repeat; background-size: contain; background-blend-mode: multiply; display: inline-block; height: 1.7rem; margin-right: 0.25rem; vertical-align: -0.45rem; width: 1.7rem; }}
         .activity small {{ color: var(--muted); display: block; font-size: 0.68rem; margin-top: 0.15rem; }}
         .calendar-total {{ align-items: center; background: var(--accent-soft); border: 1px solid var(--accent); display: flex; gap: 0.75rem; grid-column: 1 / -1; justify-content: space-between; padding: 0.8rem 1rem; }}
         .calendar-total > span {{ font: 700 0.72rem Arial, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }}
@@ -1119,6 +1395,11 @@ def _render_single_user(
             .section-heading {{ align-items: start; flex-direction: column; gap: 0.35rem; }}
             .summary-card {{ padding: 1rem; }}
             .intensity-card {{ grid-column: auto; }}
+            .recent-intensity-card {{ grid-column: auto; }}
+            .zone-legend-card {{ grid-column: auto; padding: 0.85rem; }}
+            .run-scatter-card {{ grid-column: auto; }}
+            .run-scatter-shell {{ align-items: stretch; flex-direction: column; }}
+            .longest-run-note {{ border-left: 0; border-top: 2px solid var(--teal); padding: 0.5rem 0 0; }}
             .intensity-pyramid {{ height: 7rem; width: 7rem; }}
             .trail-card {{ grid-column: auto; }}
             .trail-grid {{ gap: 0.06rem; }}
@@ -1133,7 +1414,6 @@ def _render_single_user(
             .calendar-activities {{ min-height: 3.5rem; }}
             .calendar-activities .activity {{ margin-bottom: 0.25rem; padding: 0.25rem 0.15rem; text-align: center; }}
             .calendar-activities .activity strong {{ display: none; }}
-            .calendar-activities .strength-icon {{ margin-right: 0; }}
             .calendar-activities .activity small {{ font-size: 0.52rem; line-height: 1.15; margin-top: 0; overflow-wrap: anywhere; }}
             .calendar-activities .zone-bar {{ height: 0.28rem; margin: 0.2rem 0 0.15rem; }}
             .calendar-total {{ align-items: flex-start; flex-direction: column; gap: 0.35rem; }}
@@ -1168,9 +1448,13 @@ def render(rows, generated_at=None):
     else:
         generated_at = generated_at.astimezone(REPORT_TIMEZONE)
         rows_by_account = OrderedDict((account, []) for account in ACCOUNT_NAMES)
+        zone_settings_by_account = {}
         for row in rows:
-                account_name = row[0] or "manga"
-                rows_by_account.setdefault(account_name, []).append(row[1:])
+            account_name = row[0] or "manga"
+            rows_by_account.setdefault(account_name, []).append(row[1:8])
+            zone_settings_by_account.setdefault(
+                account_name, row[8] if len(row) > 8 else []
+            )
 
         epoch = LONG_RUN_EPOCH
         today = generated_at.date()
@@ -1196,6 +1480,7 @@ def render(rows, generated_at=None):
             _render_single_user(
                 account_rows,
                 account_name,
+                zone_settings_by_account.get(account_name, []),
                 completed_by_account,
                 completed_by_account_yesterday,
                 generated_at,
@@ -1270,8 +1555,6 @@ def main():
         connection.close()
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(report, encoding="utf-8")
-    if KB_ICON.is_file():
-        shutil.copy2(KB_ICON, OUTPUT.parent / KB_ICON.name)
     print(f"Wrote {OUTPUT}")
 
 
