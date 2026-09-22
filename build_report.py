@@ -223,7 +223,7 @@ def run_scatter_markup(rows, today):
     if not points:
         return (
             '<article class="summary-card run-scatter-card">'
-            "<h3>Run Distance vs Average HR</h3>"
+            "<h3>Last 28 days - Run Distance vs Average HR</h3>"
             '<p class="goal-message">No running distance and heart-rate data in the last 28 days.</p>'
             "</article>"
         )
@@ -233,6 +233,7 @@ def run_scatter_markup(rows, today):
     plot_width = width - left - right
     plot_height = height - top - bottom
     max_distance = max(point[0] for point in points)
+    safe_long_run_km = max_distance * 1.1
     min_hr = min(point[1] for point in points)
     max_hr = max(point[1] for point in points)
     distance_scale = max(max_distance * 1.1, 1)
@@ -282,11 +283,15 @@ def run_scatter_markup(rows, today):
     )
     return (
         '<article class="summary-card run-scatter-card">'
-        "<h3>Run Distance vs Average HR</h3>"
+        "<h3>Last 28 days - Run Distance vs Average HR</h3>"
         f'<div class="run-scatter-shell">{svg}'
         f'<aside class="longest-run-note"><strong>Longest Run</strong>'
         f'<span>{max_distance:.2f} km</span></aside></div>'
-        '<p class="goal-message">Runs from the last 28 days with distance and average HR data.</p>'
+        f'<p class="goal-message"><strong>{safe_long_run_km:.2f} kms is the longest run</strong> '
+        'you can safely do while minimising injury risk. This is the longest run from the last 28 days '
+        '+ 10%, based on Frandsen et al., British Journal of Sports Medicine, 2025. A 5,205-runner, '
+        '18-month, 588,071-session prospective cohort study - the largest dataset ever used to analyse '
+        'running-load spikes and injury risk.</p>'
         "</article>"
     )
 
