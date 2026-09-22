@@ -132,6 +132,92 @@ def hr_zone_seconds_from_details(
     return {key: round(value) for key, value in zone_seconds.items() if value > 0}
 
 
+def pace_by_hr_bucket_from_details(
+    details: dict[str, Any] | None,
+) -> dict[str, dict[str, float]]:
+    if not details:
+        return {}
+    descriptors = details.get("metricDescriptors") or []
+    descriptor_indexes = {
+        descriptor.get("key"): index
+        for index, descriptor in enumerate(descriptors)
+        if isinstance(descriptor, dict)
+    }
+    heart_rate_index = descriptor_indexes.get("directHeartRate")
+    timestamp_index = descriptor_indexes.get("directTimestamp")
+    speed_index = descriptor_indexes.get("directSpeed")
+    distance_index = descriptor_indexes.get("sumDistance")
+    metrics = [
+        item.get("metrics")
+        for item in details.get("activityDetailMetrics", [])
+        if isinstance(item, dict) and isinstance(item.get("metrics"), list)
+    ]
+    if heart_rate_index is None or timestamp_index is None or not metrics:
+        return {}
+    if speed_index is None and distance_index is None:
+        return {}
+
+    # bucket floor -> [seconds, distance_m], grouped into 3 bpm-wide buckets
+    buckets: dict[str, list[float]] = {}
+    previous_interval = 1.0
+    previous_distance = None
+    for position, sample in enumerate(metrics):
+        required_index = max(
+            index for index in (heart_rate_index, timestamp_index, speed_index, distance_index)
+            if index is not None
+        )
+        if len(sample) <= required_index:
+            continue
+        heart_rate = sample[heart_rate_index]
+        timestamp = sample[timestamp_index]
+        if heart_rate is None or timestamp is None:
+            continue
+        try:
+            heart_rate = float(heart_rate)
+            timestamp = float(timestamp)
+        except (TypeError, ValueError):
+            continue
+        interval = previous_interval
+        if position + 1 < len(metrics):
+            next_timestamp = metrics[position + 1][timestamp_index]
+            try:
+                interval = (float(next_timestamp) - timestamp) / 1000
+            except (TypeError, ValueError):
+                interval = previous_interval
+        if not 0 < interval <= 10:
+            interval = previous_interval
+        previous_interval = interval
+
+        distance_delta = None
+        if speed_index is not None:
+            try:
+                distance_delta = float(sample[speed_index]) * interval
+            except (TypeError, ValueError):
+                distance_delta = None
+        if distance_delta is None and distance_index is not None:
+            try:
+                distance = float(sample[distance_index])
+            except (TypeError, ValueError):
+                distance = None
+            if distance is not None:
+                if previous_distance is not None:
+                    distance_delta = max(0.0, distance - previous_distance)
+                previous_distance = distance
+        if not distance_delta or distance_delta <= 0:
+            continue
+
+        bucket = str(int(heart_rate // 3) * 3)
+        totals = buckets.setdefault(bucket, [0.0, 0.0])
+        totals[0] += interval
+        totals[1] += distance_delta
+
+    return {
+        bucket: {"seconds": round(seconds, 1), "distance_m": round(distance_m, 1)}
+        for bucket, (seconds, distance_m) in buckets.items()
+        if seconds > 0 and distance_m > 0
+    }
+
+
 def activity_type_key(activity: dict[str, Any]) -> str:
     activity_type = activity.get("activityType") or {}
     return str(
@@ -288,6 +374,7 @@ def upsert_activity(
     user_id: str,
     activity: dict[str, Any],
     hr_zone_seconds: dict[str, int] | None = None,
+    pace_by_hr_bucket: dict[str, dict[str, float]] | None = None,
 ) -> tuple[str, str]:
     garmin_activity_id = str(activity.get("activityId"))
     sport = activity_type_key(activity)
@@ -299,11 +386,12 @@ def upsert_activity(
             start_time, activity_type, elapsed_duration_seconds,
             moving_duration_seconds, distance_meters, elevation_meters,
             average_speed, max_speed, average_heart_rate, max_heart_rate,
-            average_cadence, max_cadence, calories, steps, hr_zone_seconds, source_json
+            average_cadence, max_cadence, calories, steps, hr_zone_seconds,
+            pace_by_hr_bucket, source_json
         )
         VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON CONFLICT (garmin_activity_id) DO UPDATE SET
             user_id = EXCLUDED.user_id,
@@ -324,6 +412,7 @@ def upsert_activity(
             calories = EXCLUDED.calories,
             steps = EXCLUDED.steps,
             hr_zone_seconds = EXCLUDED.hr_zone_seconds,
+            pace_by_hr_bucket = EXCLUDED.pace_by_hr_bucket,
             source_json = EXCLUDED.source_json
         RETURNING id
         """,
@@ -347,6 +436,7 @@ def upsert_activity(
             as_int(activity.get("calories")),
             as_int(activity.get("steps")),
             Json(hr_zone_seconds or {}),
+            Json(pace_by_hr_bucket or {}),
             Json(activity),
         ),
     )
@@ -466,25 +556,32 @@ def sync_account(
                 for activity in activities:
                     sport = activity_type_key(activity)
                     zone_seconds = normalize_hr_zone_seconds(activity)
-                    if sport == "running" and not zone_seconds:
+                    pace_by_hr_bucket: dict[str, dict[str, float]] = {}
+                    if sport == "running":
                         try:
                             details = garmin.get_activity_details(
                                 str(activity.get("activityId"))
                             )
                         except Exception as exc:
                             logging.warning(
-                                "Could not fetch heart-rate zones for activity %s: %s",
+                                "Could not fetch activity details for activity %s: %s",
                                 activity.get("activityId"),
                                 exc,
                             )
                         else:
-                            zone_seconds = normalize_hr_zone_seconds(details)
                             if not zone_seconds:
-                                zone_seconds = hr_zone_seconds_from_details(
-                                    details, zone_settings
-                                )
+                                zone_seconds = normalize_hr_zone_seconds(details)
+                                if not zone_seconds:
+                                    zone_seconds = hr_zone_seconds_from_details(
+                                        details, zone_settings
+                                    )
+                            pace_by_hr_bucket = pace_by_hr_bucket_from_details(details)
                     _, sport = upsert_activity(
-                        cur, user_id, activity, hr_zone_seconds=zone_seconds
+                        cur,
+                        user_id,
+                        activity,
+                        hr_zone_seconds=zone_seconds,
+                        pace_by_hr_bucket=pace_by_hr_bucket,
                     )
                     activity_count += 1
                     values = aggregates.setdefault(sport, [0, 0, 0, 0])

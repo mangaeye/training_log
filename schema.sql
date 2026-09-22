@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS activities (
     calories INTEGER,
     steps INTEGER,
     hr_zone_seconds JSONB NOT NULL DEFAULT '{}'::jsonb,
+    pace_by_hr_bucket JSONB NOT NULL DEFAULT '{}'::jsonb,
     source_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -86,6 +87,11 @@ ALTER TABLE users
 
 ALTER TABLE activities
     ADD COLUMN IF NOT EXISTS hr_zone_seconds JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Per-activity pace-by-heart-rate-bucket aggregates for running:
+-- {"<3bpm bucket floor>": {"seconds": <float>, "distance_m": <float>}}
+ALTER TABLE activities
+    ADD COLUMN IF NOT EXISTS pace_by_hr_bucket JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_name
     ON users(account_name);

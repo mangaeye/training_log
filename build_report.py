@@ -388,6 +388,128 @@ def run_scatter_markup(rows, today):
     )
 
 
+def format_pace(seconds_per_km):
+    if seconds_per_km is None or seconds_per_km <= 0:
+        return "-"
+    total_seconds = int(round(seconds_per_km))
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes}:{seconds:02d} /km"
+
+
+def pace_by_hr_markup(rows, today, zone_settings):
+    settings = next(
+        (
+            item for item in (zone_settings or [])
+            if isinstance(item, dict) and item.get("sport") in {"DEFAULT", "RUNNING"}
+        ),
+        next((item for item in (zone_settings or []) if isinstance(item, dict)), None),
+    )
+    try:
+        floors = [int(settings[f"zone{index}Floor"]) for index in range(1, 6)]
+        maximum = int(settings["maxHeartRateUsed"])
+    except (KeyError, TypeError, ValueError):
+        return (
+            '<article class="summary-card pace-hr-card">'
+            "<h3>Last 28 days - Pace vs Heart Rate</h3>"
+            '<p class="goal-message">Garmin zone settings are not available yet.</p>'
+            "</article>"
+        )
+
+    start_date = today - timedelta(days=27)
+    bucket_totals: dict[int, list[float]] = {}
+    for row in rows:
+        if not start_date <= row[0] <= today:
+            continue
+        for activity in row[6]:
+            if str(activity.get("sport", "")).lower() != "running":
+                continue
+            for bucket_key, values in (activity.get("pace_by_hr_bucket") or {}).items():
+                if not isinstance(values, dict):
+                    continue
+                try:
+                    bucket = int(bucket_key)
+                    seconds = float(values.get("seconds", 0) or 0)
+                    distance_m = float(values.get("distance_m", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if seconds <= 0 or distance_m <= 0:
+                    continue
+                totals = bucket_totals.setdefault(bucket, [0.0, 0.0])
+                totals[0] += seconds
+                totals[1] += distance_m
+
+    points = [
+        (bucket + 1.5, seconds / (distance_m / 1000))
+        for bucket, (seconds, distance_m) in bucket_totals.items()
+    ]
+
+    if not points:
+        return (
+            '<article class="summary-card pace-hr-card">'
+            "<h3>Last 28 days - Pace vs Heart Rate</h3>"
+            '<p class="goal-message">No detailed running pace/heart-rate data yet. '
+            "Run a <code>--resync</code> backfill to populate historical activities.</p>"
+            "</article>"
+        )
+
+    width, height = 340, 200
+    left, right, top, bottom = 42, 14, 14, 32
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    hr_min = floors[0]
+    hr_max = max(maximum, hr_min + 1)
+    pace_values = [pace for _, pace in points]
+    pace_min, pace_max = min(pace_values), max(pace_values)
+    if pace_min == pace_max:
+        pace_min, pace_max = pace_min - 30, pace_max + 30
+    pace_padding = (pace_max - pace_min) * 0.1
+    pace_min -= pace_padding
+    pace_max += pace_padding
+
+    def point_position(hr, pace_seconds_per_km):
+        x = left + (hr - hr_min) / (hr_max - hr_min) * plot_width
+        y = top + (pace_seconds_per_km - pace_min) / (pace_max - pace_min) * plot_height
+        return x, y
+
+    grid = []
+    for value in list(floors) + [maximum]:
+        x = left + (value - hr_min) / (hr_max - hr_min) * plot_width
+        grid.append(
+            f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{height - bottom}" '
+            'stroke="#cfd1c6" stroke-width="1"></line>'
+            f'<text x="{x:.1f}" y="{height - bottom + 14}" text-anchor="middle">{value}</text>'
+        )
+
+    circles = []
+    for hr, pace_seconds_per_km in sorted(points):
+        x, y = point_position(hr, pace_seconds_per_km)
+        title = html.escape(f"HR: {hr:.0f} bpm; Pace: {format_pace(pace_seconds_per_km)}")
+        circles.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" '
+            'fill="#1b6c68" stroke="#171b19" stroke-width="1">'
+            f'<title>{title}</title></circle>'
+        )
+
+    svg = (
+        f'<svg class="run-scatter" viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Average running pace versus heart rate for the last 28 days">'
+        f'{"".join(grid)}'
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" stroke="#171b19"></line>'
+        f'<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" stroke="#171b19"></line>'
+        f'<text x="{width / 2}" y="{height - 8}" text-anchor="middle">Heart rate (bpm)</text>'
+        f'<text x="12" y="{height / 2}" text-anchor="middle" transform="rotate(-90 12 {height / 2})">Pace</text>'
+        f'{"".join(circles)}</svg>'
+    )
+    return (
+        '<article class="summary-card pace-hr-card">'
+        "<h3>Last 28 days - Pace vs Heart Rate</h3>"
+        f'<div class="run-scatter-shell">{svg}</div>'
+        '<p class="goal-message">Average pace per 3 bpm heart-rate bucket, from running activities '
+        "with detailed pace data in the last 28 days. Zone floors are marked on the horizontal axis.</p>"
+        "</article>"
+    )
+
+
 def zone_legend_markup(zone_settings):
     settings = next(
         (
@@ -1284,6 +1406,7 @@ def _render_single_user(
     summary_cards.append(recent_intensity_markup(rows))
     summary_cards.append(recent_cycling_markup(rows))
     summary_cards.append(run_scatter_markup(rows, today))
+    summary_cards.append(pace_by_hr_markup(rows, today, zone_settings))
     summary_cards.append(zone_legend_markup(zone_settings))
     summary_cards.append(strength_pyramid_markup(rows, today))
 
@@ -1405,6 +1528,7 @@ def _render_single_user(
         .zone-legend-row strong {{ font: 600 0.68rem "Space Grotesk", sans-serif; }}
         .zone-legend-row small {{ color: var(--muted); font-size: 0.64rem; }}
         .run-scatter-card {{ grid-column: span 2; }}
+        .pace-hr-card {{ grid-column: span 2; }}
         .run-scatter-shell {{ align-items: center; display: flex; gap: 0.8rem; margin-top: 0.7rem; }}
         .run-scatter {{ flex: 1 1 auto; min-width: 0; }}
         .run-scatter text {{ fill: var(--muted); font: 0.62rem "DM Sans", sans-serif; }}
@@ -1496,6 +1620,7 @@ def _render_single_user(
             .recent-intensity-card {{ grid-column: auto; }}
             .zone-legend-card {{ grid-column: auto; padding: 0.85rem; }}
             .run-scatter-card {{ grid-column: auto; }}
+            .pace-hr-card {{ grid-column: auto; }}
             .run-scatter-shell {{ align-items: stretch; flex-direction: column; }}
             .longest-run-note {{ border-left: 0; border-top: 2px solid var(--teal); padding: 0.5rem 0 0; }}
             .intensity-pyramid {{ height: 7rem; width: 7rem; }}
