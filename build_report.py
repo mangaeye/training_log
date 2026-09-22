@@ -202,6 +202,98 @@ def recent_intensity_markup(rows):
     )
 
 
+CYCLING_PRESENTATION = (
+    ("cycling", "Cycling", "#1b6c68"),
+    ("ebiking", "eBiking", "#ef6546"),
+)
+
+
+def cycling_activity_kind(sport):
+    sport = str(sport or "").lower()
+    if "e_bike" in sport or "ebike" in sport or "e-bike" in sport:
+        return "ebiking"
+    if "cycl" in sport or "bik" in sport or "ride" in sport:
+        return "cycling"
+    return None
+
+
+def recent_cycling_markup(rows):
+    weekly_totals = {}
+    for row in rows:
+        week_start = row[0] - timedelta(days=row[0].weekday())
+        week = weekly_totals.setdefault(
+            week_start, {"has_activity": False, "cycling": 0, "ebiking": 0}
+        )
+        for activity in row[6]:
+            kind = cycling_activity_kind(activity.get("sport"))
+            if kind is None:
+                continue
+            week["has_activity"] = True
+            week[kind] += max(0, int(activity.get("duration_seconds", 0) or 0))
+
+    longest_week_seconds = max(
+        (
+            week["cycling"] + week["ebiking"]
+            for week in weekly_totals.values()
+            if week["has_activity"]
+        ),
+        default=0,
+    )
+    items = []
+    for week_start in sorted(weekly_totals, reverse=True):
+        week = weekly_totals[week_start]
+        if not week["has_activity"]:
+            continue
+        total_seconds = week["cycling"] + week["ebiking"]
+        bar_width = (
+            total_seconds / longest_week_seconds * 100
+            if longest_week_seconds
+            else 100
+        )
+        if total_seconds:
+            segments = []
+            labels = []
+            for key, label, color in CYCLING_PRESENTATION:
+                seconds = week[key]
+                if not seconds:
+                    continue
+                percentage = seconds / total_seconds * 100
+                segments.append(
+                    f'<span class="zone-segment" style="background: {color}; width: {percentage:.2f}%" '
+                    f'title="{label}: {format_run_duration(seconds)} ({percentage:.1f}%)"></span>'
+                )
+                labels.append(f"{label}: {format_run_duration(seconds)}")
+            bar = (
+                f'<span class="zone-bar" role="img" aria-label="Week '
+                f'{week_start.isocalendar().week} cycling split: '
+                f'{html.escape("; ".join(labels))}" '
+                f'style="width: {bar_width:.2f}%">'
+                f'{"".join(segments)}</span>'
+            )
+        else:
+            bar = (
+                '<span class="zone-bar zone-bar-unavailable" '
+                'title="Cycling data unavailable" '
+                f'aria-label="Cycling data unavailable" '
+                f'style="width: {bar_width:.2f}%"></span>'
+            )
+        items.append(
+            f'<div class="recent-intensity-week">'
+            f'<strong>Week {week_start.isocalendar().week}</strong>{bar}'
+            f'<small class="recent-intensity-total">{int((total_seconds + 30) // 60)} min</small>'
+            f'</div>'
+        )
+
+    if not items:
+        items.append('<span class="empty-day">No cycling data</span>')
+    return (
+        '<article class="summary-card recent-intensity-card">'
+        "<h3>Recent Cycling &amp; eBiking</h3>"
+        f'<div class="recent-intensity-list">{"".join(items)}</div>'
+        "</article>"
+    )
+
+
 def run_scatter_markup(rows, today):
     points = []
     start_date = today - timedelta(days=27)
@@ -1190,6 +1282,7 @@ def _render_single_user(
         )
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
     summary_cards.append(recent_intensity_markup(rows))
+    summary_cards.append(recent_cycling_markup(rows))
     summary_cards.append(run_scatter_markup(rows, today))
     summary_cards.append(zone_legend_markup(zone_settings))
     summary_cards.append(strength_pyramid_markup(rows, today))
