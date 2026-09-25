@@ -1361,7 +1361,8 @@ def long_run_markup(
             f"const route = L.polyline({route_json}, {{color: '#ef6546', weight: 4, opacity: 0.9}}).addTo(map);"
             f"{marker_script}"
             "const runnerMarkers = [markerM, markerC];"
-            "map.fitBounds(L.featureGroup(runnerMarkers).getBounds(), {padding: [48, 48], maxZoom: 15});"
+            "map._trainingRunnerBounds = L.featureGroup(runnerMarkers).getBounds();"
+            "map.fitBounds(map._trainingRunnerBounds, {padding: [48, 48], maxZoom: 15});"
             "L.control.layers({'OpenStreetMap': osm, 'Esri satellite': satellite}, {}).addTo(map);"
             f"const mapShell = document.getElementById('{map_id}').parentElement;"
             f"mapShell.querySelector('[data-map-action=current]').addEventListener('click', () => map.setView(marker{current_marker_name}.getLatLng(), 14));"
@@ -2513,7 +2514,11 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
                 panel.classList.toggle('hidden', panel.dataset.account !== account);
                 if (panel.dataset.account === account) {
                     panel.querySelectorAll('.long-run-map').forEach((element) => {
-                        if (element._leafletMap) element._leafletMap.invalidateSize();
+                        if (element._leafletMap) {
+                            const map = element._leafletMap;
+                            map.invalidateSize();
+                            map.fitBounds(map._trainingRunnerBounds, {padding: [48, 48], maxZoom: 15});
+                        }
                     });
                     panel.querySelectorAll('[data-plotly-config]').forEach((element) => {
                         if (typeof Plotly !== 'undefined') Plotly.Plots.resize(element);
