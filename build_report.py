@@ -29,13 +29,25 @@ INTENSITY_TOP_STACK = (
     ("Above Threshold (VT2/LT2)", "#a53f30"),
     ("Threshold Running", "#d2691e"),
 )
+PRIDE_RAINBOW = (
+    "#B8007A",
+    "#004CFF",
+    "#008F00",
+    "#FFED00",
+    "#FF8C00",
+    "#E50000",
+)
 TRAIL_DAYS = 28
 TRAIL_EPOCH = date(2026, 9, 15)
 RUN_CADENCE_DAYS = 2
 STRENGTH_CADENCE_DAYS = 4
 HEALING_SESSION_COUNT = 2
-STRENGTH_PYRAMID_SEGMENTS = 16
+STRENGTH_PYRAMID_SEGMENTS = 18
 STRENGTH_PYRAMID_KEEP_DAYS = 6
+RUN_PYRAMID_SEGMENTS = 30
+RUN_PYRAMID_EPOCH = date(2026, 8, 31)
+STRENGTH_PYRAMID_COLOR_GROUP_SIZE = 3
+RUN_PYRAMID_COLOR_GROUP_SIZE = 5
 MAX_HISTORY_WEEKS = 6
 REPORT_TIMEZONE = ZoneInfo("Australia/Melbourne")
 
@@ -1751,6 +1763,7 @@ def strength_pyramid_markup(rows, today):
         for row in rows
         for activity in row[6]
         if row[0] <= today
+        and row[0] >= RUN_PYRAMID_EPOCH
         and str(activity.get("sport", "")).lower()
         in {"strength", "strength_training"}
     )
@@ -1782,8 +1795,11 @@ def strength_pyramid_markup(rows, today):
         filled = segment_number <= filled_segments
         width = (position + 1) / STRENGTH_PYRAMID_SEGMENTS * 100
         state = " filled" if filled else ""
+        color = PRIDE_RAINBOW[
+            (segment_number - 1) // STRENGTH_PYRAMID_COLOR_GROUP_SIZE
+        ] if filled else "#ffffff"
         segments.append(
-            f'<span class="pyramid-segment{state}" style="width: {width:.2f}%" '
+            f'<span class="pyramid-segment{state}" style="width: {width:.2f}%; background: {color};" '
             f'aria-label="Strength pyramid segment {segment_number}: '
             f'{"filled" if filled else "empty"}"></span>'
         )
@@ -1792,7 +1808,65 @@ def strength_pyramid_markup(rows, today):
         "<h3>Strength progress pyramid</h3>"
         f'<div class="strength-pyramid" role="img" aria-label="{filled_segments} of {STRENGTH_PYRAMID_SEGMENTS} strength pyramid segments filled">'
         f"{''.join(segments)}</div>"
-        f"<p class=\"pyramid-note\">Log a strength workout by {due_date.strftime('%a %d %b')} to keep all your strength.</p>"
+        f"<p class=\"pyramid-note\">Start: {RUN_PYRAMID_EPOCH.strftime('%a %d %b %Y')} • Rule: log a strength workout by {due_date.strftime('%a %d %b')} to keep all your strength.</p>"
+        "</article>"
+    )
+
+
+def run_progress_pyramid_markup(rows, today):
+    epoch = RUN_PYRAMID_EPOCH
+    current_monday = today - timedelta(days=today.weekday())
+    week_runs = {}
+    for row in rows:
+        activity_date = row[0]
+        if activity_date < epoch or activity_date >= current_monday:
+            continue
+        run_dates = week_runs.setdefault(
+            activity_date - timedelta(days=activity_date.weekday()), set()
+        )
+        for activity in row[6] or []:
+            if str(activity.get("sport", "")).lower() == "running":
+                run_dates.add(activity_date)
+
+    filled_segments = 0
+    week_count = 0
+    week_start = epoch
+    while week_start < current_monday:
+        week_count += 1
+        run_count = len(week_runs.get(week_start, set()))
+        if run_count == 0:
+            delta = -2
+        elif run_count == 1:
+            delta = 0
+        elif run_count == 2:
+            delta = 1
+        else:
+            delta = 2
+        filled_segments = max(0, min(RUN_PYRAMID_SEGMENTS, filled_segments + delta))
+        week_start += timedelta(days=7)
+
+    segments = []
+    for position in range(RUN_PYRAMID_SEGMENTS):
+        segment_number = RUN_PYRAMID_SEGMENTS - position
+        filled = segment_number <= filled_segments
+        width = (position + 1) / RUN_PYRAMID_SEGMENTS * 100
+        state = " filled" if filled else ""
+        color = PRIDE_RAINBOW[
+            (segment_number - 1) // RUN_PYRAMID_COLOR_GROUP_SIZE
+        ] if filled else "#ffffff"
+        segments.append(
+            f'<span class="pyramid-segment{state}" style="width: {width:.2f}%; background: {color};" '
+            f'aria-label="Run pyramid segment {segment_number}: '
+            f'{"filled" if filled else "empty"}"></span>'
+        )
+    note = f"Start: {epoch.strftime('%a %d %b %Y')}"
+    rule_text = "Rules: Runs completed each week 0 runs −2, 1 run 0, 2 runs +1, 3+ runs +2"
+    return (
+        '<article class="summary-card pyramid-card">'
+        "<h3>Run progress pyramid</h3>"
+        f'<div class="strength-pyramid" role="img" aria-label="{filled_segments} of {RUN_PYRAMID_SEGMENTS} run pyramid segments filled">'
+        f"{''.join(segments)}</div>"
+        f"<p class=\"pyramid-note\">{html.escape(note)} • {html.escape(rule_text)}</p>"
         "</article>"
     )
 
@@ -2035,6 +2109,7 @@ def _render_single_user(
             "</dl></article>"
         )
     summary_cards.append(strength_pyramid_markup(rows, today))
+    summary_cards.append(run_progress_pyramid_markup(rows, today))
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
     summary_cards.append(recent_intensity_markup(rows, today))
     if account_name != "chips":
