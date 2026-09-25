@@ -7,3 +7,5 @@ Untitled-1.ipynb
 build_local_report.ps1
 .venv/
 site/index.html
+local_data/
+local_site/

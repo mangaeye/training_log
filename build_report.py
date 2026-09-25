@@ -2,6 +2,7 @@ import html
 import json
 import math
 import os
+import argparse
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -114,9 +115,24 @@ RUN_ZONE_PRESENTATION = (
 )
 
 
-def recent_intensity_markup(rows):
+def format_hours_minutes(seconds):
+    total_minutes = int((float(seconds) + 30) // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} hr" if hours == 1 else f"{hours} hrs")
+    if minutes or not parts:
+        parts.append(f"{minutes} min" if minutes == 1 else f"{minutes} mins")
+    return " ".join(parts)
+
+
+def recent_intensity_markup(rows, today=None):
+    today = today or date.today()
+    start_date = today - timedelta(days=41)
     weekly_totals = {}
     for row in rows:
+        if not start_date <= row[0] <= today:
+            continue
         week_start = row[0] - timedelta(days=row[0].weekday())
         week = weekly_totals.setdefault(
             week_start,
@@ -171,12 +187,15 @@ def recent_intensity_markup(rows):
                     f'title="{label}: {format_run_duration(seconds)} ({percentage:.1f}%)"></span>'
                 )
                 labels.append(f"{label}: {format_run_duration(seconds)}")
+            hour_marker_width = min(100, 3600 / total_seconds * 100)
             bar = (
                 f'<span class="zone-bar" role="img" aria-label="Week '
                 f'{week_start.isocalendar().week} heart-rate zones: '
                 f'{html.escape("; ".join(labels))}" '
                 f'style="width: {bar_width:.2f}%">'
-                f'{"".join(segments)}</span>'
+                f'{"".join(segments)}'
+                f'<span class="zone-hour-lines" aria-hidden="true" '
+                f'style="background-size: {hour_marker_width:.2f}% 100%"></span></span>'
             )
         else:
             bar = (
@@ -187,8 +206,8 @@ def recent_intensity_markup(rows):
             )
         items.append(
             f'<div class="recent-intensity-week">'
-            f'<strong>Week {week_start.isocalendar().week}</strong>{bar}'
-            f'<small class="recent-intensity-total">{int((week["run_seconds"] + 30) // 60)} min</small>'
+            f'<strong>{"Current week" if week_start == today - timedelta(days=today.weekday()) else f"Week {week_start.isocalendar().week}"}</strong>{bar}'
+            f'<small class="recent-intensity-total">{format_hours_minutes(week["run_seconds"])}</small>'
             f'</div>'
         )
 
@@ -217,9 +236,13 @@ def cycling_activity_kind(sport):
     return None
 
 
-def recent_cycling_markup(rows):
+def recent_cycling_markup(rows, today=None):
+    today = today or date.today()
+    start_date = today - timedelta(days=41)
     weekly_totals = {}
     for row in rows:
+        if not start_date <= row[0] <= today:
+            continue
         week_start = row[0] - timedelta(days=row[0].weekday())
         week = weekly_totals.setdefault(
             week_start, {"has_activity": False, "cycling": 0, "ebiking": 0}
@@ -396,7 +419,442 @@ def format_pace(seconds_per_km):
     return f"{minutes}:{seconds:02d} /km"
 
 
-def pace_by_hr_markup(rows, today, zone_settings):
+LOCAL_YEARS = (
+    ("2023", 2023, "#1b6c68"),
+    ("2024", 2024, "#d2691e"),
+    ("2025", 2025, "#755d8a"),
+    ("2026", 2026, "#3d6fb6"),
+)
+MIN_PACE_SECONDS_PER_KM = 2 * 60
+MAX_PACE_SECONDS_PER_KM = 13 * 60
+RUNNING_CADENCE_ENTER = 140
+RUNNING_CADENCE_EXIT = 130
+RUNNING_STATE_CONFIRM_SECONDS = 10
+
+
+def local_annual_pace_points(data_root, lag_seconds=0):
+    series_by_account = {account: {label: {} for label, _, _ in LOCAL_YEARS} for account in ACCOUNT_NAMES}
+    details_root = data_root / "garmin_details"
+    for account in ACCOUNT_NAMES:
+        account_root = details_root / account
+        if not account_root.is_dir():
+            continue
+        for date_dir in account_root.iterdir():
+            if not date_dir.is_dir():
+                continue
+            try:
+                activity_date = date.fromisoformat(date_dir.name)
+            except ValueError:
+                continue
+            year = next(
+                (label for label, year_value, _ in LOCAL_YEARS
+                 if activity_date.year == year_value),
+                None,
+            )
+            if year is None:
+                continue
+            for detail_path in date_dir.glob("*.json"):
+                try:
+                    details = json.loads(detail_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                descriptors = details.get("metricDescriptors") or []
+                indexes = {
+                    descriptor.get("key"): index
+                    for index, descriptor in enumerate(descriptors)
+                    if isinstance(descriptor, dict)
+                }
+                hr_index = indexes.get("directHeartRate")
+                timestamp_index = indexes.get("directTimestamp")
+                speed_index = indexes.get("directSpeed")
+                cadence_index = indexes.get("directDoubleCadence")
+                distance_index = indexes.get("sumDistance")
+                metrics = [
+                    item.get("metrics")
+                    for item in details.get("activityDetailMetrics", [])
+                    if isinstance(item, dict) and isinstance(item.get("metrics"), list)
+                ]
+                if hr_index is None or timestamp_index is None or not metrics:
+                    continue
+                if speed_index is None and distance_index is None:
+                    continue
+                running_state_by_timestamp = {}
+                running_state = False
+                cadence_above_seconds = 0.0
+                cadence_below_seconds = 0.0
+                for position, sample in enumerate(metrics):
+                    if len(sample) <= max(index for index in (timestamp_index, cadence_index) if index is not None):
+                        continue
+                    try:
+                        timestamp = float(sample[timestamp_index])
+                    except (TypeError, ValueError):
+                        continue
+                    interval = 1.0
+                    if position + 1 < len(metrics):
+                        try:
+                            interval = (float(metrics[position + 1][timestamp_index]) - timestamp) / 1000
+                        except (TypeError, ValueError):
+                            interval = 1.0
+                    if not 0 < interval <= 10:
+                        interval = 1.0
+                    cadence = None
+                    if cadence_index is not None:
+                        try:
+                            cadence = float(sample[cadence_index])
+                        except (TypeError, ValueError):
+                            cadence = None
+                    if cadence is not None and cadence >= RUNNING_CADENCE_ENTER:
+                        cadence_above_seconds += interval
+                        cadence_below_seconds = 0.0
+                        if cadence_above_seconds >= RUNNING_STATE_CONFIRM_SECONDS:
+                            running_state = True
+                    elif cadence is not None and cadence < RUNNING_CADENCE_EXIT:
+                        cadence_below_seconds += interval
+                        cadence_above_seconds = 0.0
+                        if cadence_below_seconds >= RUNNING_STATE_CONFIRM_SECONDS:
+                            running_state = False
+                    try:
+                        heart_rate = float(sample[hr_index])
+                    except (TypeError, ValueError):
+                        continue
+                    running_state_by_timestamp[timestamp] = (heart_rate, running_state)
+                buckets = series_by_account[account][year]
+                previous_interval = 1.0
+                previous_distance = None
+                start_timestamp = None
+                for position, sample in enumerate(metrics):
+                    required = max(
+                        index for index in (
+                            hr_index,
+                            timestamp_index,
+                            speed_index,
+                            cadence_index,
+                            distance_index,
+                        )
+                        if index is not None
+                    )
+                    if len(sample) <= required:
+                        continue
+                    try:
+                        heart_rate = float(sample[hr_index])
+                        timestamp = float(sample[timestamp_index])
+                    except (TypeError, ValueError):
+                        continue
+                    if start_timestamp is None:
+                        start_timestamp = timestamp
+                    interval = previous_interval
+                    if position + 1 < len(metrics):
+                        try:
+                            interval = (float(metrics[position + 1][timestamp_index]) - timestamp) / 1000
+                        except (TypeError, ValueError):
+                            interval = previous_interval
+                    if not 0 < interval <= 10:
+                        interval = previous_interval
+                    previous_interval = interval
+                    distance_delta = None
+                    if speed_index is not None:
+                        try:
+                            distance_delta = float(sample[speed_index]) * interval
+                        except (TypeError, ValueError):
+                            pass
+                    if distance_delta is None and distance_index is not None:
+                        try:
+                            distance = float(sample[distance_index])
+                        except (TypeError, ValueError):
+                            distance = None
+                        if distance is not None:
+                            if previous_distance is not None:
+                                distance_delta = max(0.0, distance - previous_distance)
+                            previous_distance = distance
+                    pace_seconds_per_km = 1000 / distance_delta if distance_delta else 0
+                    running_state = running_state_by_timestamp.get(timestamp, (heart_rate, False))[1]
+                    if (
+                        not distance_delta
+                        or distance_delta <= 0
+                        or (timestamp - start_timestamp) / 1000 < 180
+                        or not MIN_PACE_SECONDS_PER_KM <= pace_seconds_per_km <= MAX_PACE_SECONDS_PER_KM
+                    ):
+                        continue
+                    if not running_state:
+                        continue
+                    if lag_seconds:
+                        future_timestamp = next(
+                            (
+                                future
+                                for future in running_state_by_timestamp
+                                if future >= timestamp + lag_seconds * 1000
+                                and running_state_by_timestamp[future][1]
+                            ),
+                            None,
+                        )
+                        if future_timestamp is None:
+                            continue
+                        heart_rate = running_state_by_timestamp[future_timestamp][0]
+                    bucket = int(heart_rate // 3) * 3
+                    totals = buckets.setdefault(bucket, [0.0, 0.0])
+                    totals[0] += interval
+                    totals[1] += distance_delta
+    return {
+        account: {
+            year: [(bucket + 1.5, seconds / (distance / 1000)) for bucket, (seconds, distance) in buckets.items() if distance > 0]
+            for year, buckets in years.items()
+        }
+        for account, years in series_by_account.items()
+    }
+
+
+    stats = {
+        account: {
+            label: {"seconds": 0.0, "distance_m": 0.0, "hr_by_pace": {}}
+            for label, _, _ in LOCAL_YEARS
+        }
+        for account in ACCOUNT_NAMES
+    }
+    for account in ACCOUNT_NAMES:
+        for detail_path in (data_root / "garmin_details" / account).glob("*/*.json"):
+            try:
+                activity_date = date.fromisoformat(detail_path.parent.name)
+                details = json.loads(detail_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            year = next(
+                (label for label, year_value, _ in LOCAL_YEARS if activity_date.year == year_value),
+                None,
+            )
+            if year is None:
+                continue
+            indexes = {
+                item.get("key"): index
+                for index, item in enumerate(details.get("metricDescriptors", []))
+                if isinstance(item, dict)
+            }
+            hr_index = indexes.get("directHeartRate")
+            timestamp_index = indexes.get("directTimestamp")
+            speed_index = indexes.get("directSpeed")
+            cadence_index = indexes.get("directDoubleCadence")
+            if None in (hr_index, timestamp_index, speed_index):
+                continue
+            metrics = [
+                item.get("metrics")
+                for item in details.get("activityDetailMetrics", [])
+                if isinstance(item, dict) and isinstance(item.get("metrics"), list)
+            ]
+            running = False
+            above_seconds = below_seconds = 0.0
+            start_timestamp = previous_timestamp = None
+            year_stats = stats[account][year]
+            for sample in metrics:
+                required = max(hr_index, timestamp_index, speed_index, cadence_index or 0)
+                if len(sample) <= required:
+                    continue
+                try:
+                    timestamp = float(sample[timestamp_index])
+                    heart_rate = float(sample[hr_index])
+                    speed = float(sample[speed_index])
+                except (TypeError, ValueError):
+                    continue
+                if start_timestamp is None:
+                    start_timestamp = timestamp
+                interval = (
+                    1.0
+                    if previous_timestamp is None
+                    else (timestamp - previous_timestamp) / 1000
+                )
+                if not 0 < interval <= 10:
+                    interval = 1.0
+                previous_timestamp = timestamp
+                cadence = None
+                if cadence_index is not None:
+                    try:
+                        cadence = float(sample[cadence_index])
+                    except (TypeError, ValueError):
+                        pass
+                if cadence is not None and cadence >= RUNNING_CADENCE_ENTER:
+                    above_seconds += interval
+                    below_seconds = 0.0
+                    if above_seconds >= RUNNING_STATE_CONFIRM_SECONDS:
+                        running = True
+                elif cadence is not None and cadence < RUNNING_CADENCE_EXIT:
+                    below_seconds += interval
+                    above_seconds = 0.0
+                    if below_seconds >= RUNNING_STATE_CONFIRM_SECONDS:
+                        running = False
+                if not running or speed <= 0 or heart_rate <= 0:
+                    continue
+                pace_seconds = 1000 / speed
+                if (
+                    (timestamp - start_timestamp) / 1000 < 180
+                    or not MIN_PACE_SECONDS_PER_KM <= pace_seconds <= MAX_PACE_SECONDS_PER_KM
+                ):
+                    continue
+                pace_band = int(pace_seconds // 10) * 10
+                band = year_stats["hr_by_pace"].setdefault(pace_band, [0.0, 0.0])
+                band[0] += heart_rate * interval
+                band[1] += interval
+                year_stats["seconds"] += interval
+                year_stats["distance_m"] += speed * interval
+    return stats
+
+
+def local_annual_summary(data_root, account_name=None):
+    summaries = {
+        account: {str(year): {"runs": 0, "seconds": 0.0, "distance_m": 0.0}
+                  for _, year, _ in LOCAL_YEARS}
+        for account in ACCOUNT_NAMES
+    }
+    accounts = (account_name,) if account_name else ACCOUNT_NAMES
+    for account in accounts:
+        for detail_path in (data_root / "garmin_details" / account).glob("*/*.json"):
+            try:
+                activity_date = date.fromisoformat(detail_path.parent.name)
+                details = json.loads(detail_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            year = str(activity_date.year)
+            if year not in summaries[account]:
+                continue
+            indexes = {
+                item.get("key"): index
+                for index, item in enumerate(details.get("metricDescriptors", []))
+                if isinstance(item, dict)
+            }
+            duration_index = indexes.get("sumDuration")
+            distance_index = indexes.get("sumDistance")
+            speed_index = indexes.get("directSpeed")
+            cadence_index = indexes.get("directDoubleCadence")
+            metrics = [
+                item.get("metrics")
+                for item in details.get("activityDetailMetrics", [])
+                if isinstance(item, dict) and isinstance(item.get("metrics"), list)
+            ]
+            if duration_index is None or distance_index is None or not metrics:
+                continue
+            duration = distance = 0.0
+            has_running_cadence = False
+            for sample in metrics:
+                required = max(duration_index, distance_index, speed_index or 0, cadence_index or 0)
+                if len(sample) <= required:
+                    continue
+                try:
+                    duration = max(duration, float(sample[duration_index]))
+                    distance = max(distance, float(sample[distance_index]))
+                except (TypeError, ValueError):
+                    continue
+                if cadence_index is not None:
+                    try:
+                        if float(sample[cadence_index]) >= RUNNING_CADENCE_ENTER:
+                            has_running_cadence = True
+                    except (TypeError, ValueError):
+                        pass
+            pace = 1000 * duration / distance if distance > 0 else 0
+            if (
+                not has_running_cadence
+                or duration < 180
+                or not MIN_PACE_SECONDS_PER_KM <= pace <= MAX_PACE_SECONDS_PER_KM
+            ):
+                continue
+            summary = summaries[account][year]
+            summary["runs"] += 1
+            summary["seconds"] += duration
+            summary["distance_m"] += distance
+    return summaries
+
+
+def annual_summary_markup(data_root, rows, account_name):
+    raw_summaries = local_annual_summary(data_root, account_name)[account_name]
+    resting_by_year = {str(year): [] for _, year, _ in LOCAL_YEARS}
+    for row in rows:
+        year = str(row[0].year)
+        if year in resting_by_year and row[7] is not None:
+            try:
+                resting_by_year[year].append(float(row[7]))
+            except (TypeError, ValueError):
+                pass
+    cells = []
+    for label, year, _ in LOCAL_YEARS:
+        summary = raw_summaries[str(year)]
+        resting = resting_by_year[str(year)]
+        values = (
+            str(summary["runs"]) if summary["runs"] else "No data",
+            format_hours_minutes(summary["seconds"]) if summary["runs"] else "No data",
+            f'{summary["distance_m"] / 1000:.2f} km' if summary["runs"] else "No data",
+            f"{sum(resting) / len(resting):.0f} bpm" if resting else "No data",
+        )
+        cells.append(values)
+    metric_labels = ("Total number of runs", "Total time running", "Total kms ran", "Average resting HR")
+    rows_markup = "".join(
+        f'<tr><th scope="row">{metric}</th>{"".join(f"<td>{html.escape(cells[index][metric_index])}</td>" for index in range(len(cells)))}</tr>'
+        for metric_index, metric in enumerate(metric_labels)
+    )
+    return (
+        '<article class="summary-card local-annual-card">'
+        "<h3>Annual Summary</h3>"
+        '<div class="table-wrap annual-table-wrap"><table class="annual-table">'
+        '<thead><tr><th scope="col">Metric</th>'
+        + "".join(f'<th scope="col">{label}</th>' for label, _, _ in LOCAL_YEARS)
+        + f"</tr></thead><tbody>{rows_markup}</tbody></table></div></article>"
+    )
+
+
+def efficiency_summary_markup(efficiency_stats):
+    def pace_label(seconds):
+        return format_pace(seconds).replace(" /km", "/km")
+
+    year_values = {}
+    for label, _, _ in LOCAL_YEARS:
+        item = efficiency_stats[label]
+        year_values[label] = (
+            item["seconds"] / (item["distance_m"] / 1000)
+            if item["distance_m"]
+            else None
+        )
+    changes = []
+    for first, second in zip(LOCAL_YEARS, LOCAL_YEARS[1:]):
+        first_value = year_values[first[0]]
+        second_value = year_values[second[0]]
+        if first_value is not None and second_value is not None:
+            changes.append(
+                f"{first[0]} to {second[0]}: "
+                f"{abs(first_value - second_value):.0f} seconds/km "
+                f"{'faster' if second_value < first_value else 'slower'}"
+            )
+    first_year = efficiency_stats[LOCAL_YEARS[0][0]]["hr_by_pace"]
+    latest_year = efficiency_stats[LOCAL_YEARS[-1][0]]["hr_by_pace"]
+    improvements = []
+    for pace_band in set(first_year) & set(latest_year):
+        first_hr = first_year[pace_band][0] / first_year[pace_band][1]
+        latest_hr = latest_year[pace_band][0] / latest_year[pace_band][1]
+        improvements.append((first_hr - latest_hr, pace_band))
+    best = sorted(improvements, reverse=True)[:5]
+    best_markup = "".join(
+        f"<li>{pace_label(pace_band)}: <strong>{change:.1f} bpm lower</strong></li>"
+        for change, pace_band in best
+        if change > 0
+    ) or "<li>No lower-HR pace bands yet</li>"
+    year_markup = "".join(
+        f"<li>{label}: <strong>{pace_label(value) if value else 'No data'}</strong></li>"
+        for label, value in year_values.items()
+    )
+    return (
+        '<article class="summary-card local-efficiency-card">'
+        "<h3>Running Efficiency</h3>"
+        '<p class="summary-period">Lower heart rate at the same pace indicates improvement.</p>'
+        '<div class="efficiency-columns">'
+        f"<div><strong>Average pace</strong><ul>{year_markup}</ul></div>"
+        f"<div><strong>2023 to 2026 HR improvements</strong><ul>{best_markup}</ul></div>"
+        f'<p class="goal-message">{" · ".join(changes) if changes else "Not enough annual data yet."}</p>'
+        "</div>"
+        "</article>"
+    )
+
+
+def pace_by_hr_markup(
+    rows,
+    today,
+    zone_settings,
+    annual_points=None,
+    title="Pace vs Heart Rate",
+):
     settings = next(
         (
             item for item in (zone_settings or [])
@@ -410,43 +868,65 @@ def pace_by_hr_markup(rows, today, zone_settings):
     except (KeyError, TypeError, ValueError):
         return (
             '<article class="summary-card pace-hr-card">'
-            "<h3>Last 28 days - Pace vs Heart Rate</h3>"
+            f"<h3>{html.escape(title)}</h3>"
             '<p class="goal-message">Garmin zone settings are not available yet.</p>'
             "</article>"
         )
 
-    start_date = today - timedelta(days=27)
-    bucket_totals: dict[int, list[float]] = {}
-    for row in rows:
-        if not start_date <= row[0] <= today:
-            continue
-        for activity in row[6]:
-            if str(activity.get("sport", "")).lower() != "running":
+    if annual_points is None:
+        start_date = today - timedelta(days=27)
+        bucket_totals: dict[int, list[float]] = {}
+        for row in rows:
+            if not start_date <= row[0] <= today:
                 continue
-            for bucket_key, values in (activity.get("pace_by_hr_bucket") or {}).items():
-                if not isinstance(values, dict):
+            for activity in row[6]:
+                if str(activity.get("sport", "")).lower() != "running":
                     continue
-                try:
-                    bucket = int(bucket_key)
-                    seconds = float(values.get("seconds", 0) or 0)
-                    distance_m = float(values.get("distance_m", 0) or 0)
-                except (TypeError, ValueError):
-                    continue
-                if seconds <= 0 or distance_m <= 0:
-                    continue
-                totals = bucket_totals.setdefault(bucket, [0.0, 0.0])
-                totals[0] += seconds
-                totals[1] += distance_m
-
-    points = [
-        (bucket + 1.5, seconds / (distance_m / 1000))
-        for bucket, (seconds, distance_m) in bucket_totals.items()
-    ]
+                for bucket_key, values in (activity.get("pace_by_hr_bucket") or {}).items():
+                    if not isinstance(values, dict):
+                        continue
+                    try:
+                        bucket = int(bucket_key)
+                        seconds = float(values.get("seconds", 0) or 0)
+                        distance_m = float(values.get("distance_m", 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if seconds <= 0 or distance_m <= 0:
+                        continue
+                    totals = bucket_totals.setdefault(bucket, [0.0, 0.0])
+                    totals[0] += seconds
+                    totals[1] += distance_m
+        series = [
+            (
+                "Last 28 days",
+                [
+                    (bucket + 1.5, seconds / (distance / 1000))
+                    for bucket, (seconds, distance) in bucket_totals.items()
+                    if MIN_PACE_SECONDS_PER_KM <= seconds / (distance / 1000) <= MAX_PACE_SECONDS_PER_KM
+                ],
+                "#1b6c68",
+            )
+        ]
+    else:
+        series = [
+            (
+                label,
+                [
+                    (heart_rate, pace)
+                    for heart_rate, pace in points
+                    if MIN_PACE_SECONDS_PER_KM <= pace <= MAX_PACE_SECONDS_PER_KM
+                ],
+                color,
+            )
+            for label, _, color in LOCAL_YEARS
+            if (points := annual_points.get(label))
+        ]
+    points = [point for _, series_points, _ in series for point in series_points]
 
     if not points:
         return (
             '<article class="summary-card pace-hr-card">'
-            "<h3>Last 28 days - Pace vs Heart Rate</h3>"
+            f"<h3>{html.escape(title)}</h3>"
             '<p class="goal-message">No detailed running pace/heart-rate data yet. '
             "Run a <code>--resync</code> backfill to populate historical activities.</p>"
             "</article>"
@@ -459,13 +939,7 @@ def pace_by_hr_markup(rows, today, zone_settings):
     data_hr_values = [hr for hr, _ in points]
     hr_min = min(floors[0], min(data_hr_values)) - 2
     hr_max = max(maximum, max(data_hr_values)) + 2
-    pace_values = [pace for _, pace in points]
-    pace_min, pace_max = min(pace_values), max(pace_values)
-    if pace_min == pace_max:
-        pace_min, pace_max = pace_min - 30, pace_max + 30
-    pace_padding = (pace_max - pace_min) * 0.1
-    pace_min -= pace_padding
-    pace_max += pace_padding
+    pace_min, pace_max = MIN_PACE_SECONDS_PER_KM, MAX_PACE_SECONDS_PER_KM
 
     def point_position(hr, pace_seconds_per_km):
         x = left + (hr - hr_min) / (hr_max - hr_min) * plot_width
@@ -497,8 +971,7 @@ def pace_by_hr_markup(rows, today, zone_settings):
             'stroke="#cfd1c6" stroke-width="1"></line>'
             f'<text x="{x:.1f}" y="{height - bottom + 14}" text-anchor="middle">{value}</text>'
         )
-    for fraction in (0, 0.5, 1):
-        pace_value = pace_min + (pace_max - pace_min) * fraction
+    for pace_value in range(MIN_PACE_SECONDS_PER_KM, MAX_PACE_SECONDS_PER_KM + 1, 30):
         y = top + (pace_value - pace_min) / (pace_max - pace_min) * plot_height
         pace_label = format_pace(pace_value).replace(" /km", "")
         grid.append(
@@ -508,14 +981,17 @@ def pace_by_hr_markup(rows, today, zone_settings):
         )
 
     circles = []
-    for hr, pace_seconds_per_km in sorted(points):
-        x, y = point_position(hr, pace_seconds_per_km)
-        title = html.escape(f"HR: {hr:.0f} bpm; Pace: {format_pace(pace_seconds_per_km)}")
-        circles.append(
-            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" '
-            'fill="#1b6c68" stroke="#171b19" stroke-width="1">'
-            f'<title>{title}</title></circle>'
-        )
+    for series_index, (label, series_points, color) in enumerate(series):
+        series_id = f"pace-series-{series_index}"
+        for hr, pace_seconds_per_km in sorted(series_points):
+            x, y = point_position(hr, pace_seconds_per_km)
+            tooltip_title = html.escape(
+                f"{label}; HR: {hr:.0f} bpm; Pace: {format_pace(pace_seconds_per_km)}"
+            )
+            circles.append(
+                f'<circle data-series="{series_id}" cx="{x:.1f}" cy="{y:.1f}" r="3" fill="{color}" stroke="#171b19" stroke-width="1">'
+                f'<title>{tooltip_title}</title></circle>'
+            )
 
     svg = (
         f'<svg class="run-scatter" viewBox="0 0 {width} {height}" role="img" '
@@ -528,13 +1004,22 @@ def pace_by_hr_markup(rows, today, zone_settings):
         f'<text x="12" y="{height / 2}" text-anchor="middle" transform="rotate(-90 12 {height / 2})">Pace</text>'
         f'{"".join(circles)}</svg>'
     )
+    legend = ""
+    if annual_points is not None:
+        legend_items = [
+            f'<label><input type="checkbox" data-series-toggle="pace-series-{index}" checked>'
+            f'<i style="background:{color}"></i>{html.escape(label)}</label>'
+            for index, (label, _, color) in enumerate(series)
+        ]
+        legend = f'<div class="pace-hr-legend">{"".join(legend_items)}</div>'
+    card_class = "summary-card pace-hr-card lagged-pace-hr-card" if annual_points is not None else "summary-card pace-hr-card"
     return (
-        '<article class="summary-card pace-hr-card">'
-        "<h3>Last 28 days - Pace vs Heart Rate</h3>"
+        f'<article class="{card_class}">'
+        f"<h3>{html.escape(title)}</h3>"
         f'<div class="run-scatter-shell">{svg}</div>'
-        '<p class="goal-message">Average pace per 3 bpm heart-rate bucket, from running activities '
-        "with detailed pace data in the last 28 days. Zone floors are marked on the horizontal axis.</p>"
-        "</article>"
+        '<p class="goal-message">Average pace per 3 bpm heart-rate bucket, with zone floors marked on the horizontal axis.</p>'
+        + legend
+        + "</article>"
     )
 
 
@@ -669,7 +1154,10 @@ def long_run_markup(
     route_points = route_coordinates()
     total_race_distance = route_distance_meters(route_points)
     completed_rows = [row for row in rows if epoch <= row[0] <= today]
-    completed_meters = sum(float(row[1] or 0) for row in completed_rows)
+    completed_meters = sum(
+        max(0.0, float(row[4] or 0))
+        for row in completed_rows
+    )
     elapsed_days = max((today - epoch).days + 1, 1)
     average_meters_per_day = completed_meters / elapsed_days
     remaining_meters = max(total_race_distance - completed_meters, 0)
@@ -1285,7 +1773,8 @@ def fetch_rows(connection):
             COALESCE(dst.total_distance_meters, 0) AS run_distance_meters,
             COALESCE(dst.total_duration_seconds, 0) AS run_duration_seconds,
             COALESCE(activity_days.activities, '[]'::jsonb) AS activities,
-            COALESCE(u.hr_zone_settings, '[]'::jsonb) AS hr_zone_settings
+            COALESCE(u.hr_zone_settings, '[]'::jsonb) AS hr_zone_settings,
+            ds.resting_heart_rate
         FROM daily_summaries AS ds
         JOIN users AS u
             ON u.id = ds.user_id
@@ -1412,6 +1901,9 @@ def _render_single_user(
     completed_by_account,
     completed_by_account_yesterday,
     generated_at,
+    annual_points=None,
+    lagged_annual_points=None,
+    efficiency_stats=None,
 ):
     today = generated_at.date()
     current_monday = today - timedelta(days=today.weekday())
@@ -1432,10 +1924,25 @@ def _render_single_user(
             "</dl></article>"
         )
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
-    summary_cards.append(recent_intensity_markup(rows))
-    summary_cards.append(recent_cycling_markup(rows))
+    summary_cards.append(recent_intensity_markup(rows, today))
+    summary_cards.append(recent_cycling_markup(rows, today))
     summary_cards.append(run_scatter_markup(rows, today))
-    summary_cards.append(pace_by_hr_markup(rows, today, zone_settings))
+    if annual_points is None:
+        summary_cards.append(pace_by_hr_markup(rows, today, zone_settings))
+    if lagged_annual_points is not None:
+        summary_cards.append(
+            pace_by_hr_markup(
+                rows,
+                today,
+                zone_settings,
+                lagged_annual_points,
+                title="Pace vs Heart Rate",
+            )
+        )
+    if annual_points is not None:
+        summary_cards.append(annual_summary_markup(ROOT / "local_data", rows, account_name))
+    if efficiency_stats is not None:
+        summary_cards.append(efficiency_summary_markup(efficiency_stats))
     summary_cards.append(zone_legend_markup(zone_settings))
     summary_cards.append(strength_pyramid_markup(rows, today))
 
@@ -1557,7 +2064,25 @@ def _render_single_user(
         .zone-legend-row strong {{ font: 600 0.68rem "Space Grotesk", sans-serif; }}
         .zone-legend-row small {{ color: var(--muted); font-size: 0.64rem; }}
         .run-scatter-card {{ grid-column: span 2; }}
-        .pace-hr-card {{ grid-column: span 2; }}
+        .pace-hr-card {{ grid-column: 1 / -1; }}
+        .lagged-pace-hr-card .run-scatter-shell {{ display: block; }}
+        .lagged-pace-hr-card .run-scatter {{ display: block; max-width: 38rem; width: 100%; }}
+        .lagged-pace-hr-card .pace-hr-legend {{ font-size: 0.82rem; gap: 0.9rem 1.2rem; margin-top: 0.8rem; }}
+        .lagged-pace-hr-card .pace-hr-legend label {{ cursor: pointer; min-height: 1.6rem; }}
+        .lagged-pace-hr-card .pace-hr-legend input {{ height: 1rem; width: 1rem; }}
+        .chart-touch-tooltip {{ background: var(--ink); border: 1px solid var(--card); border-radius: 3px; color: var(--card); display: none; font-size: 0.72rem; max-width: min(18rem, 80vw); padding: 0.45rem 0.6rem; position: fixed; z-index: 20; }}
+        .pace-hr-legend {{ display: flex; flex-wrap: wrap; gap: 0.7rem; margin-top: 0.55rem; }}
+        .pace-hr-legend label {{ align-items: center; display: inline-flex; font-size: 0.68rem; gap: 0.3rem; }}
+        .pace-hr-legend input {{ accent-color: var(--teal); margin: 0; }}
+        .pace-hr-legend i {{ border: 1px solid var(--ink); display: inline-block; height: 0.55rem; width: 0.55rem; }}
+        .local-efficiency-card {{ grid-column: 1 / -1; }}
+        .local-annual-card {{ grid-column: 1 / -1; }}
+        .annual-table-wrap {{ margin-top: 0.7rem; }}
+        .annual-table {{ min-width: 50rem; }}
+        .annual-table th:first-child, .annual-table td:first-child {{ min-width: 12rem; }}
+        .efficiency-columns {{ display: grid; gap: 1.2rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 0.8rem; }}
+        .efficiency-columns ul {{ list-style: none; margin: 0.35rem 0 0; padding: 0; }}
+        .efficiency-columns li {{ font-size: 0.78rem; margin: 0.18rem 0; }}
         .run-scatter-shell {{ align-items: center; display: flex; gap: 0.8rem; margin-top: 0.7rem; }}
         .run-scatter {{ flex: 1 1 auto; min-width: 0; }}
         .run-scatter text {{ fill: var(--muted); font: 0.62rem "DM Sans", sans-serif; }}
@@ -1623,8 +2148,9 @@ def _render_single_user(
         .activity {{ background: #e3eee8; border-left: 3px solid var(--teal); display: block; margin: 0 0 0.4rem; padding: 0.35rem; }}
         .activity-strength {{ background: #f7e5c8; border-left-color: #c8872d; }}
         .activity strong {{ display: block; font-size: 0.78rem; overflow-wrap: anywhere; }}
-        .zone-bar {{ background: var(--line); display: flex; height: 0.42rem; margin: 0.35rem 0 0.2rem; overflow: hidden; width: 100%; }}
+        .zone-bar {{ background: var(--line); display: flex; height: 0.42rem; margin: 0.35rem 0 0.2rem; overflow: hidden; position: relative; width: 100%; }}
         .zone-segment {{ display: block; height: 100%; min-width: 1px; }}
+        .zone-hour-lines {{ background-image: repeating-linear-gradient(to right, transparent 0, transparent calc(100% - 1px), rgba(23, 27, 25, 0.55) 100%); inset: 0; pointer-events: none; position: absolute; }}
         .zone-bar-unavailable {{ background: repeating-linear-gradient(135deg, #d9d8cf 0, #d9d8cf 3px, #c1c2ba 3px, #c1c2ba 6px); }}
         .activity small {{ color: var(--muted); display: block; font-size: 0.68rem; margin-top: 0.15rem; }}
         .calendar-total {{ align-items: center; background: var(--accent-soft); border: 1px solid var(--accent); display: flex; gap: 0.75rem; grid-column: 1 / -1; justify-content: space-between; padding: 0.8rem 1rem; }}
@@ -1649,7 +2175,17 @@ def _render_single_user(
             .recent-intensity-card {{ grid-column: auto; }}
             .zone-legend-card {{ grid-column: auto; padding: 0.85rem; }}
             .run-scatter-card {{ grid-column: auto; }}
-            .pace-hr-card {{ grid-column: auto; }}
+            .pace-hr-card {{ grid-column: 1 / -1; }}
+            .lagged-pace-hr-card .run-scatter {{ max-width: 100%; }}
+            .local-efficiency-card {{ grid-column: 1 / -1; }}
+            .local-annual-card {{ grid-column: 1 / -1; padding: 0.8rem; }}
+            .annual-table {{ min-width: 42rem; }}
+            .annual-table th, .annual-table td {{ padding: 0.55rem 0.45rem; }}
+            .account-switch {{ align-items: stretch; flex-wrap: wrap; }}
+            .account-switch-label {{ flex-basis: 100%; margin-right: 0; }}
+            .account-button {{ flex: 1 1 8rem; }}
+            .pace-hr-legend {{ gap: 0.45rem 0.8rem; }}
+            .efficiency-columns {{ grid-template-columns: 1fr; }}
             .run-scatter-shell {{ align-items: stretch; flex-direction: column; }}
             .longest-run-note {{ border-left: 0; border-top: 2px solid var(--teal); padding: 0.5rem 0 0; }}
             .intensity-pyramid {{ height: 7rem; width: 7rem; }}
@@ -1693,7 +2229,7 @@ def _render_single_user(
 """
 
 
-def render(rows, generated_at=None):
+def render(rows, generated_at=None, local_raw_root=None):
     generated_at = generated_at or datetime.now(REPORT_TIMEZONE)
     if generated_at.tzinfo is None:
         generated_at = generated_at.replace(tzinfo=REPORT_TIMEZONE)
@@ -1703,7 +2239,7 @@ def render(rows, generated_at=None):
         zone_settings_by_account = {}
         for row in rows:
             account_name = row[0] or "manga"
-            rows_by_account.setdefault(account_name, []).append(row[1:8])
+            rows_by_account.setdefault(account_name, []).append(row[1:8] + (row[9],))
             zone_settings_by_account.setdefault(
                 account_name, row[8] if len(row) > 8 else []
             )
@@ -1728,6 +2264,16 @@ def render(rows, generated_at=None):
             for account_name, account_rows in rows_by_account.items()
         }
 
+        local_points = (
+            local_annual_pace_points(local_raw_root)
+            if local_raw_root is not None
+            else {}
+        )
+        local_lagged_points = (
+            local_annual_pace_points(local_raw_root, lag_seconds=10)
+            if local_raw_root is not None
+            else {}
+        )
         documents = [
             _render_single_user(
                 account_rows,
@@ -1736,6 +2282,9 @@ def render(rows, generated_at=None):
                 completed_by_account,
                 completed_by_account_yesterday,
                 generated_at,
+                local_points.get(account_name),
+                local_lagged_points.get(account_name),
+                None,
             )
                 for account_name, account_rows in rows_by_account.items()
         ]
@@ -1762,6 +2311,46 @@ def render(rows, generated_at=None):
         )
         script = """
 <script>
+    const chartTouchTooltip = document.createElement('div');
+    chartTouchTooltip.className = 'chart-touch-tooltip';
+    chartTouchTooltip.setAttribute('role', 'status');
+    document.body.appendChild(chartTouchTooltip);
+
+    function hideChartTouchTooltip() {
+        chartTouchTooltip.style.display = 'none';
+    }
+
+    document.addEventListener('pointerdown', (event) => {
+        const point = event.target.closest?.('.run-scatter circle');
+        if (!point) {
+            hideChartTouchTooltip();
+            return;
+        }
+        const title = point.querySelector('title');
+        if (!title) return;
+        chartTouchTooltip.textContent = title.textContent;
+        chartTouchTooltip.style.display = 'block';
+        const pointRect = point.getBoundingClientRect();
+        const tooltipRect = chartTouchTooltip.getBoundingClientRect();
+        chartTouchTooltip.style.left = `${Math.max(8, Math.min(
+            window.innerWidth - tooltipRect.width - 8,
+            pointRect.left + pointRect.width / 2 - tooltipRect.width / 2
+        ))}px`;
+        chartTouchTooltip.style.top = `${Math.max(8, pointRect.top - tooltipRect.height - 8)}px`;
+        event.stopPropagation();
+    });
+
+    document.addEventListener('change', (event) => {
+        const toggle = event.target.closest?.('[data-series-toggle]');
+        if (!toggle) return;
+        const card = toggle.closest('.pace-hr-card');
+        if (!card) return;
+        const series = toggle.dataset.seriesToggle;
+        card.querySelectorAll(`[data-series="${series}"]`).forEach((point) => {
+            point.style.display = toggle.checked ? '' : 'none';
+        });
+    });
+
     document.querySelectorAll('.account-button').forEach((button) => {
         button.addEventListener('click', () => {
             const account = button.dataset.account;
@@ -1795,6 +2384,19 @@ def render(rows, generated_at=None):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Build the Garmin report from Supabase.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=OUTPUT,
+        help="Write the generated report to this path instead of site/index.html.",
+    )
+    parser.add_argument(
+        "--local-raw",
+        action="store_true",
+        help="Use local_data raw detail files for annual pace data.",
+    )
+    args = parser.parse_args()
     load_env_file()
     database_url = os.getenv("SUPABASE_DB_URL")
     if not database_url:
@@ -1802,12 +2404,15 @@ def main():
     connection = psycopg2.connect(database_url, sslmode="require")
     try:
         ensure_schema(connection)
-        report = render(fetch_rows(connection))
+        report = render(
+            fetch_rows(connection),
+            local_raw_root=ROOT / "local_data" if args.local_raw else None,
+        )
     finally:
         connection.close()
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(report, encoding="utf-8")
-    print(f"Wrote {OUTPUT}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report, encoding="utf-8")
+    print(f"Wrote {args.output}")
 
 
 if __name__ == "__main__":

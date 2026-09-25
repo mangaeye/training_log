@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import json
 import logging
 import os
 import sys
@@ -31,6 +32,22 @@ def load_env_file():
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"'))
+
+
+def save_activity_details(account_name: str, activity_date: date, activity_id: str, details):
+    output_dir = (
+        ROOT
+        / os.getenv("GARMIN_LOCAL_DATA_DIR", "local_data")
+        / "garmin_details"
+        / account_name
+        / activity_date.isoformat()
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{activity_id}.json"
+    output_path.write_text(
+        json.dumps(details, ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
 
 
 def as_int(value: Any) -> int | None:
@@ -491,6 +508,7 @@ def sync_account(
     start_date: date,
     end_date: date,
     resync: bool = False,
+    save_details: bool = False,
 ):
     garmin = init_garmin(account_name)
     if garmin is None:
@@ -576,6 +594,13 @@ def sync_account(
                                 exc,
                             )
                         else:
+                            if save_details:
+                                save_activity_details(
+                                    account_name,
+                                    current,
+                                    str(activity.get("activityId")),
+                                    details,
+                                )
                             if not zone_seconds:
                                 zone_seconds = normalize_hr_zone_seconds(details)
                                 if not zone_seconds:
@@ -624,9 +649,20 @@ def sync_account(
     )
 
 
-def sync_range(start_date: date, end_date: date, resync: bool = False):
+def sync_range(
+    start_date: date,
+    end_date: date,
+    resync: bool = False,
+    save_details: bool = False,
+):
     for account_name in ACCOUNT_NAMES:
-        sync_account(account_name, start_date, end_date, resync=resync)
+        sync_account(
+            account_name,
+            start_date,
+            end_date,
+            resync=resync,
+            save_details=save_details,
+        )
 
 
 def main():
@@ -644,6 +680,11 @@ def main():
         action="store_true",
         help="Refresh all dates in the requested range, including finalized historical dates.",
     )
+    parser.add_argument(
+        "--save-details",
+        action="store_true",
+        help="Save fetched activity-detail JSON under local_data; opt-in and local-only.",
+    )
     args = parser.parse_args()
 
     end_date = args.end_date or date.today()
@@ -659,7 +700,12 @@ def main():
         parser.error("--start-date must be on or before --end-date")
 
     try:
-        sync_range(start_date, end_date, resync=args.resync)
+        sync_range(
+            start_date,
+            end_date,
+            resync=args.resync,
+            save_details=args.save_details,
+        )
     except (GarminConnectTooManyRequestsError, GarminConnectAuthenticationError) as exc:
         print(f"Garmin authentication/rate-limit error: {exc}", file=sys.stderr)
         raise SystemExit(1)
