@@ -1929,6 +1929,7 @@ def _render_single_user(
             # f"<div><dt>Avg sedentary/day</dt><dd>{format_duration(totals['average_sedentary'])}</dd></div>"
             "</dl></article>"
         )
+    summary_cards.append(strength_pyramid_markup(rows, today))
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
     summary_cards.append(recent_intensity_markup(rows, today))
     if account_name != "chips":
@@ -1958,7 +1959,6 @@ def _render_single_user(
     if efficiency_stats is not None:
         summary_cards.append(efficiency_summary_markup(efficiency_stats))
     summary_cards.append(zone_legend_markup(zone_settings))
-    summary_cards.append(strength_pyramid_markup(rows, today))
 
     grouped = OrderedDict()
     for row in rows:
@@ -2262,7 +2262,7 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
         today = generated_at.date()
         completed_by_account = {
             account_name: sum(
-                float(row[1] or 0)
+                max(0.0, float(row[4] or 0))
                 for row in account_rows
                 if epoch <= row[0] <= today
             )
@@ -2271,7 +2271,7 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
         yesterday = today - timedelta(days=1)
         completed_by_account_yesterday = {
             account_name: sum(
-                float(row[1] or 0)
+                max(0.0, float(row[4] or 0))
                 for row in account_rows
                 if epoch <= row[0] <= yesterday
             )
