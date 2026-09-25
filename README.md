@@ -42,6 +42,32 @@ For the workflow, add `SUPABASE_DB_URL` and whichever account token secrets are 
 
 GitHub Pages visibility is controlled by GitHub organization and repository settings. A private repository does not automatically make a Pages site private on every GitHub plan, so check the Pages visibility setting before publishing personal health data.
 
+### Derived raw-data reports
+
+Detailed Garmin activity JSON is kept locally in `local_data/` and is excluded from Git. The public report does not need the raw files: long-term calculations are exported as derived values to `site/report_data.json`.
+
+When raw Garmin data has changed, refresh the derived data:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\update_report_data.ps1
+```
+
+This reads the private local raw files and updates only the derived JSON. It does not run a Garmin sync.
+
+To rebuild the local private page from the existing derived data, without rescanning raw files:
+
+```powershell
+.\.venv\Scripts\python.exe build_report.py --output local_site\index.html
+```
+
+To refresh derived data and rebuild the published GitHub Pages files in one step:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build_published_report.ps1
+```
+
+Review `site/report_data.json` and `site/index.html`, then commit and push those generated files. Do not commit `local_data/`, Garmin token files, or `.env`.
+
 ### At a glance goal cards
 
 Choose each account's cards in `GOAL_CARD_VIEWS` in [report_config.py](report_config.py). The available views are:

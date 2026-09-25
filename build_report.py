@@ -344,10 +344,6 @@ def run_scatter_markup(rows, today):
             "</article>"
         )
 
-    width, height = 340, 200
-    left, right, top, bottom = 42, 14, 14, 32
-    plot_width = width - left - right
-    plot_height = height - top - bottom
     max_distance = max(point[0] for point in points)
     safe_long_run_km = max_distance * 1.1
     min_hr = min(point[1] for point in points)
@@ -356,51 +352,65 @@ def run_scatter_markup(rows, today):
     hr_padding = max((max_hr - min_hr) * 0.15, 3)
     hr_min = max(0, min_hr - hr_padding)
     hr_max = max_hr + hr_padding
-
-    def point_position(distance_km, average_hr):
-        x = left + distance_km / distance_scale * plot_width
-        y = top + (hr_max - average_hr) / (hr_max - hr_min) * plot_height
-        return x, y
-
-    grid = []
-    for value in (hr_min, hr_max):
-        y = top + (hr_max - value) / (hr_max - hr_min) * plot_height
-        grid.append(
-            f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" '
-            'stroke="#cfd1c6" stroke-width="1"></line>'
-            f'<text x="{left - 7}" y="{y + 3:.1f}" text-anchor="end">{value:.0f}</text>'
-        )
-    circles = []
-    for distance_km, average_hr, activity_date, name in points:
-        x, y = point_position(distance_km, average_hr)
-        is_longest = distance_km == max_distance
-        radius = 6 if is_longest else 4
-        title = html.escape(
-            f"Run date: {activity_date.strftime('%d %b %Y')}; "
-            f"Distance: {distance_km:.2f} km; Average HR: {average_hr:.0f} bpm"
-        )
-        point_markup = (
-            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius}" '
-            f'fill="{"#1b6c68" if is_longest else "#ef6546"}" stroke="#171b19" stroke-width="1">'
-            f'<title>{title}</title></circle>'
-        )
-        circles.append(point_markup)
-    svg = (
-        f'<svg class="run-scatter" viewBox="0 0 {width} {height}" role="img" '
-        f'aria-label="Running distance versus average heart rate for the last 28 days">'
-        f'{"".join(grid)}'
-        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}" stroke="#171b19"></line>'
-        f'<line x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}" stroke="#171b19"></line>'
-        f'<text x="{left}" y="{height - 8}">0 km</text>'
-        f'<text x="{width - right}" y="{height - 8}" text-anchor="end">{distance_scale:.1f} km</text>'
-        f'<text x="{width / 2}" y="{height - 8}" text-anchor="middle">Distance</text>'
-        f'<text x="12" y="{height / 2}" text-anchor="middle" transform="rotate(-90 12 {height / 2})">Average HR (bpm)</text>'
-        f'{"".join(circles)}</svg>'
+    plotly_data = json.dumps(
+        {
+            "data": [
+                {
+                    "x": [distance_km for distance_km, _, _, _ in points],
+                    "y": [average_hr for _, average_hr, _, _ in points],
+                    "mode": "markers",
+                    "marker": {
+                        "color": [
+                            "#1b6c68" if distance_km == max_distance else "#ef6546"
+                            for distance_km, _, _, _ in points
+                        ],
+                        "size": [
+                            10 if distance_km == max_distance else 7
+                            for distance_km, _, _, _ in points
+                        ],
+                        "line": {"color": "#171b19", "width": 1},
+                    },
+                    "customdata": [
+                        [activity_date.strftime("%d %b %Y"), activity_name]
+                        for _, _, activity_date, activity_name in points
+                    ],
+                    "hovertemplate": (
+                        "Run date: %{customdata[0]}<br>"
+                        "Distance: %{x:.2f} km<br>"
+                        "Average HR: %{y:.0f} bpm<extra></extra>"
+                    ),
+                }
+            ],
+            "layout": {
+                "margin": {"l": 58, "r": 18, "t": 12, "b": 52},
+                "paper_bgcolor": "rgba(0,0,0,0)",
+                "plot_bgcolor": "rgba(0,0,0,0)",
+                "hovermode": "closest",
+                "font": {"family": "DM Sans, sans-serif", "color": "#171b19"},
+                "xaxis": {
+                    "title": "Distance (km)",
+                    "range": [0, distance_scale],
+                    "gridcolor": "#cfd1c6",
+                    "zeroline": False,
+                },
+                "yaxis": {
+                    "title": "Average HR (bpm)",
+                    "range": [hr_min, hr_max],
+                    "gridcolor": "#cfd1c6",
+                    "zeroline": False,
+                },
+            },
+            "config": {"responsive": True, "displayModeBar": False},
+        },
+        separators=(",", ":"),
     )
+    chart_id = f"plotly-run-scatter-chart-{id(points)}"
     return (
         '<article class="summary-card run-scatter-card">'
         "<h3>Last 28 days - Run Distance vs Average HR</h3>"
-        f'<div class="run-scatter-shell">{svg}'
+        f'<div class="run-scatter-shell"><div class="plotly-run-scatter-chart" '
+        f'id="{chart_id}" data-plotly-config="{html.escape(plotly_data)}" '
+        'role="img" aria-label="Running distance versus average heart rate for the last 28 days"></div>'
         f'<aside class="longest-run-note"><strong>Longest Run</strong>'
         f'<span>{max_distance:.2f} km</span></aside></div>'
         f'<p class="goal-message"><strong>{safe_long_run_km:.2f} kms is the longest run</strong> '
@@ -924,7 +934,7 @@ def pace_by_hr_markup(
                 color,
             )
             for label, _, color in LOCAL_YEARS
-            if (points := annual_points.get(label))
+            for points in [annual_points.get(label) or []]
         ]
     points = [point for _, series_points, _ in series for point in series_points]
 
@@ -945,6 +955,100 @@ def pace_by_hr_markup(
     hr_min = min(floors[0], min(data_hr_values)) - 2
     hr_max = max(maximum, max(data_hr_values)) + 2
     pace_min, pace_max = MIN_PACE_SECONDS_PER_KM, MAX_PACE_SECONDS_PER_KM
+
+    if annual_points is not None:
+        plotly_series = [
+            {
+                "name": label,
+                "x": [heart_rate for heart_rate, _ in series_points],
+                "y": [pace for _, pace in series_points],
+                "mode": "markers",
+                "marker": {"color": color, "size": 6},
+                "customdata": [
+                    [heart_rate, format_pace(pace)]
+                    for heart_rate, pace in series_points
+                ],
+                "hovertemplate": (
+                    "%{fullData.name}<br>"
+                    "HR: %{customdata[0]:.0f} bpm<br>"
+                    "Pace: %{customdata[1]}<extra></extra>"
+                ),
+            }
+            for label, series_points, color in series
+        ]
+        plotly_data = json.dumps(
+            {
+                "data": plotly_series,
+                "layout": {
+                    "margin": {"l": 52, "r": 16, "t": 12, "b": 42},
+                    "paper_bgcolor": "rgba(0,0,0,0)",
+                    "plot_bgcolor": "rgba(0,0,0,0)",
+                    "hovermode": "closest",
+                    "xaxis": {
+                        "title": "Heart rate (bpm)",
+                        "range": [hr_min, hr_max],
+                        "tickmode": "array",
+                        "tickvals": floors + [maximum],
+                        "gridcolor": "#cfd1c6",
+                        "zeroline": False,
+                    },
+                    "yaxis": {
+                        "title": "Pace",
+                        "autorange": "reversed",
+                        "tickmode": "array",
+                        "tickvals": list(
+                            range(
+                                MIN_PACE_SECONDS_PER_KM,
+                                MAX_PACE_SECONDS_PER_KM + 1,
+                                30,
+                            )
+                        ),
+                        "ticktext": [
+                            format_pace(value).replace(" /km", "")
+                            for value in range(
+                                MIN_PACE_SECONDS_PER_KM,
+                                MAX_PACE_SECONDS_PER_KM + 1,
+                                30,
+                            )
+                        ],
+                        "gridcolor": "#cfd1c6",
+                        "zeroline": False,
+                    },
+                    "shapes": [
+                        {
+                            "type": "rect",
+                            "xref": "x",
+                            "yref": "paper",
+                            "x0": band_start,
+                            "x1": band_end,
+                            "y0": 0,
+                            "y1": 1,
+                            "fillcolor": color,
+                            "opacity": 0.3,
+                            "line": {"width": 0},
+                        }
+                        for color, band_start, band_end in (
+                            (INTENSITY_BOTTOM_STACK[0][1], floors[0], floors[2]),
+                            (INTENSITY_BOTTOM_STACK[1][1], floors[2], floors[3]),
+                            (INTENSITY_TOP_STACK[1][1], floors[3], floors[4]),
+                            (INTENSITY_TOP_STACK[0][1], floors[4], maximum),
+                        )
+                    ],
+                },
+                "config": {"responsive": True, "displayModeBar": False},
+            },
+            separators=(",", ":"),
+        )
+        chart_id = f"plotly-pace-chart-{id(annual_points)}"
+        return (
+            '<article class="summary-card pace-hr-card lagged-pace-hr-card">'
+            f"<h3>{html.escape(title)}</h3>"
+            f'<div class="run-scatter-shell"><div class="plotly-pace-chart" '
+            f'id="{chart_id}" data-plotly-config="{html.escape(plotly_data)}" '
+            'role="img" aria-label="Average running pace versus heart rate by year"></div></div>'
+            '<p class="goal-message">Average pace per 3 bpm heart-rate bucket, with zone floors marked on the horizontal axis.</p>'
+            '</article>'
+        )
 
     def point_position(hr, pace_seconds_per_km):
         x = left + (hr - hr_min) / (hr_max - hr_min) * plot_width
@@ -1267,7 +1371,7 @@ def long_run_markup(
             "})();</script>"
         )
     return (
-        "<details class=\"long-run\" open><summary>The Long Run</summary>"
+        f'<details class="long-run" open><summary>{"The Long Race" if account_name == "chips" else "The Long Run"}</summary>'
         "<div class=\"long-run-content\"><dl class=\"long-run-grid\">"
         f"<div><dt>Start date</dt><dd>{epoch.strftime('%a %d %b %Y')}</dd></div>"
         f"<div><dt>Total race distance</dt><dd>{total_race_distance / 1000:.1f} km</dd></div>"
@@ -2081,6 +2185,8 @@ def _render_single_user(
         .pace-hr-card {{ grid-column: 1 / -1; }}
         .lagged-pace-hr-card .run-scatter-shell {{ display: block; }}
         .lagged-pace-hr-card .run-scatter {{ display: block; max-width: 38rem; width: 100%; }}
+        .plotly-pace-chart {{ min-height: 22rem; width: 100%; }}
+        .plotly-run-scatter-chart {{ flex: 1 1 auto; min-height: 22rem; min-width: 0; width: 100%; }}
         .lagged-pace-hr-card .pace-hr-legend {{ font-size: 0.82rem; gap: 0.9rem 1.2rem; margin-top: 0.8rem; }}
         .lagged-pace-hr-card .pace-hr-legend label {{ cursor: pointer; min-height: 1.6rem; }}
         .lagged-pace-hr-card .pace-hr-legend input {{ height: 1rem; width: 1rem; }}
@@ -2320,6 +2426,14 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
         ]
         first_document = documents[0]
         head, _body = first_document.split("<body>", 1)
+        if (
+            any('data-plotly-config=' in document for document in documents)
+            and "https://cdn.plot.ly/plotly-2.35.2.min.js" not in head
+        ):
+            head = head.replace(
+                "</head>",
+                '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>\n</head>',
+            )
         _body_content, tail = first_document.split("</body>", 1)
         panels = []
         for index, (account_name, document) in enumerate(zip(rows_by_account, documents)):
@@ -2341,6 +2455,12 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
         )
         script = """
 <script>
+    document.querySelectorAll('[data-plotly-config]').forEach((chart) => {
+        if (typeof Plotly === 'undefined') return;
+        const config = JSON.parse(chart.dataset.plotlyConfig);
+        Plotly.newPlot(chart, config.data, config.layout, config.config);
+    });
+
     const chartTouchTooltip = document.createElement('div');
     chartTouchTooltip.className = 'chart-touch-tooltip';
     chartTouchTooltip.setAttribute('role', 'status');
@@ -2394,6 +2514,9 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
                 if (panel.dataset.account === account) {
                     panel.querySelectorAll('.long-run-map').forEach((element) => {
                         if (element._leafletMap) element._leafletMap.invalidateSize();
+                    });
+                    panel.querySelectorAll('[data-plotly-config]').forEach((element) => {
+                        if (typeof Plotly !== 'undefined') Plotly.Plots.resize(element);
                     });
                 }
             });
