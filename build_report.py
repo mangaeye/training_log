@@ -15,6 +15,7 @@ from report_config import GOAL_CARD_VIEWS, INTENSITY_GOAL_MINUTES, LONG_RUN_EPOC
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "site" / "index.html"
+DERIVED_DATA = ROOT / "site" / "report_data.json"
 ROUTE_KML = ROOT / "route.kml"
 ACCOUNT_NAMES = ("manga", "chips")
 # Zone stacks for the intensity pyramid: bottom stack fills up from the base,
@@ -760,8 +761,12 @@ def local_annual_summary(data_root, account_name=None):
     return summaries
 
 
-def annual_summary_markup(data_root, rows, account_name):
-    raw_summaries = local_annual_summary(data_root, account_name)[account_name]
+def annual_summary_markup(data_root, rows, account_name, derived_summary=None):
+    raw_summaries = (
+        derived_summary
+        if derived_summary is not None
+        else local_annual_summary(data_root, account_name)[account_name]
+    )
     resting_by_year = {str(year): [] for _, year, _ in LOCAL_YEARS}
     for row in rows:
         year = str(row[0].year)
@@ -772,7 +777,7 @@ def annual_summary_markup(data_root, rows, account_name):
                 pass
     cells = []
     for label, year, _ in LOCAL_YEARS:
-        summary = raw_summaries[str(year)]
+        summary = raw_summaries.get(str(year), {})
         resting = resting_by_year[str(year)]
         values = (
             str(summary["runs"]) if summary["runs"] else "No data",
@@ -1904,6 +1909,7 @@ def _render_single_user(
     annual_points=None,
     lagged_annual_points=None,
     efficiency_stats=None,
+    annual_summary=None,
 ):
     today = generated_at.date()
     current_monday = today - timedelta(days=today.weekday())
@@ -1925,7 +1931,8 @@ def _render_single_user(
         )
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
     summary_cards.append(recent_intensity_markup(rows, today))
-    summary_cards.append(recent_cycling_markup(rows, today))
+    if account_name != "chips":
+        summary_cards.append(recent_cycling_markup(rows, today))
     summary_cards.append(run_scatter_markup(rows, today))
     if annual_points is None:
         summary_cards.append(pace_by_hr_markup(rows, today, zone_settings))
@@ -1940,7 +1947,14 @@ def _render_single_user(
             )
         )
     if annual_points is not None:
-        summary_cards.append(annual_summary_markup(ROOT / "local_data", rows, account_name))
+        summary_cards.append(
+            annual_summary_markup(
+                ROOT / "local_data",
+                rows,
+                account_name,
+                derived_summary=annual_summary,
+            )
+        )
     if efficiency_stats is not None:
         summary_cards.append(efficiency_summary_markup(efficiency_stats))
     summary_cards.append(zone_legend_markup(zone_settings))
@@ -2229,7 +2243,7 @@ def _render_single_user(
 """
 
 
-def render(rows, generated_at=None, local_raw_root=None):
+def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
     generated_at = generated_at or datetime.now(REPORT_TIMEZONE)
     if generated_at.tzinfo is None:
         generated_at = generated_at.replace(tzinfo=REPORT_TIMEZONE)
@@ -2264,14 +2278,29 @@ def render(rows, generated_at=None, local_raw_root=None):
             for account_name, account_rows in rows_by_account.items()
         }
 
+        derived_accounts = (derived_data or {}).get("accounts", {})
         local_points = (
             local_annual_pace_points(local_raw_root)
             if local_raw_root is not None
-            else {}
+            else {
+                account: values.get("annual_pace_points", {})
+                for account, values in derived_accounts.items()
+            }
         )
         local_lagged_points = (
             local_annual_pace_points(local_raw_root, lag_seconds=10)
             if local_raw_root is not None
+            else {
+                account: values.get("annual_lagged_pace_points", {})
+                for account, values in derived_accounts.items()
+            }
+        )
+        local_summaries = (
+            {
+                account: values.get("annual_summary", {})
+                for account, values in derived_accounts.items()
+            }
+            if local_raw_root is None
             else {}
         )
         documents = [
@@ -2285,6 +2314,7 @@ def render(rows, generated_at=None, local_raw_root=None):
                 local_points.get(account_name),
                 local_lagged_points.get(account_name),
                 None,
+                local_summaries.get(account_name),
             )
                 for account_name, account_rows in rows_by_account.items()
         ]
@@ -2402,11 +2432,18 @@ def main():
     if not database_url:
         raise RuntimeError("SUPABASE_DB_URL is not configured")
     connection = psycopg2.connect(database_url, sslmode="require")
+    derived_data = {}
+    if DERIVED_DATA.exists():
+        try:
+            derived_data = json.loads(DERIVED_DATA.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            derived_data = {}
     try:
         ensure_schema(connection)
         report = render(
             fetch_rows(connection),
             local_raw_root=ROOT / "local_data" if args.local_raw else None,
+            derived_data=derived_data,
         )
     finally:
         connection.close()
