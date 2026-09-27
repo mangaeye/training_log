@@ -1819,7 +1819,7 @@ def run_progress_pyramid_markup(rows, today):
     week_runs = {}
     for row in rows:
         activity_date = row[0]
-        if activity_date < epoch or activity_date >= current_monday:
+        if activity_date < epoch or activity_date > today:
             continue
         run_dates = week_runs.setdefault(
             activity_date - timedelta(days=activity_date.weekday()), set()
@@ -1831,10 +1831,12 @@ def run_progress_pyramid_markup(rows, today):
     filled_segments = 0
     week_count = 0
     week_start = epoch
-    while week_start < current_monday:
+    while week_start <= current_monday:
         week_count += 1
         run_count = len(week_runs.get(week_start, set()))
-        if run_count == 0:
+        if week_start == current_monday:
+            delta = 2 if run_count >= 3 else 1 if run_count == 2 else 0
+        elif run_count == 0:
             delta = -2
         elif run_count == 1:
             delta = 0
@@ -1860,7 +1862,7 @@ def run_progress_pyramid_markup(rows, today):
             f'{"filled" if filled else "empty"}"></span>'
         )
     note = f"Start: {epoch.strftime('%a %d %b %Y')}"
-    rule_text = "Rules: Runs completed each week 0 runs −2, 1 run 0, 2 runs +1, 3+ runs +2"
+    rule_text = "Rules: Runs completed each week 0 runs −2, 1 run 0, 2 runs +1, 3+ runs +2; current-week gains apply immediately"
     return (
         '<article class="summary-card pyramid-card">'
         "<h3>Run progress pyramid</h3>"
