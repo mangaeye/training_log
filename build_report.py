@@ -480,7 +480,7 @@ RUNNING_CADENCE_EXIT = 130
 RUNNING_STATE_CONFIRM_SECONDS = 10
 
 
-def local_annual_pace_points(data_root, lag_seconds=0):
+def local_annual_pace_points(data_root, lag_seconds=0, bucket_sizes=None):
     series_by_account = {account: {label: {} for label, _, _ in LOCAL_YEARS} for account in ACCOUNT_NAMES}
     details_root = data_root / "garmin_details"
     for account in ACCOUNT_NAMES:
@@ -638,7 +638,8 @@ def local_annual_pace_points(data_root, lag_seconds=0):
                         if future_timestamp is None:
                             continue
                         heart_rate = running_state_by_timestamp[future_timestamp][0]
-                    bucket = int(heart_rate // 3) * 3
+                    bucket_size = (bucket_sizes or {}).get((account, year), 3)
+                    bucket = int(heart_rate // bucket_size) * bucket_size
                     totals = buckets.setdefault(bucket, [0.0, 0.0])
                     totals[0] += interval
                     totals[1] += distance_delta
@@ -906,6 +907,7 @@ def pace_by_hr_markup(
     zone_settings,
     annual_points=None,
     annual_years=None,
+    bucket_size=3,
     title="Pace vs Heart Rate",
 ):
     settings = next(
@@ -1086,7 +1088,7 @@ def pace_by_hr_markup(
             f'<div class="run-scatter-shell"><div class="plotly-pace-chart" '
             f'id="{chart_id}" data-plotly-config="{html.escape(plotly_data)}" '
             'role="img" aria-label="Average running pace versus heart rate by year"></div></div>'
-            '<p class="goal-message">Average pace per 3 bpm heart-rate bucket, with zone floors marked on the horizontal axis.</p>'
+            f'<p class="goal-message">Average pace per {bucket_size} bpm heart-rate bucket, with zone floors marked on the horizontal axis.</p>'
             '</article>'
         )
 
@@ -1166,7 +1168,7 @@ def pace_by_hr_markup(
         f'<article class="{card_class}">'
         f"<h3>{html.escape(title)}</h3>"
         f'<div class="run-scatter-shell">{svg}</div>'
-        '<p class="goal-message">Average pace per 3 bpm heart-rate bucket, with zone floors marked on the horizontal axis.</p>'
+        f'<p class="goal-message">Average pace per {bucket_size} bpm heart-rate bucket, with zone floors marked on the horizontal axis.</p>'
         + legend
         + "</article>"
     )
@@ -2155,6 +2157,7 @@ def _render_single_user(
                 zone_settings,
                 lagged_annual_points,
                 annual_years=(str(today.year),) if account_name == "chips" else None,
+                bucket_size=1 if account_name == "chips" and today.year == 2026 else 3,
                 title="Pace vs Heart Rate",
             )
         )
@@ -2493,7 +2496,10 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
 
         derived_accounts = (derived_data or {}).get("accounts", {})
         local_points = (
-            local_annual_pace_points(local_raw_root)
+            local_annual_pace_points(
+                local_raw_root,
+                bucket_sizes={("chips", str(today.year)): 1},
+            )
             if local_raw_root is not None
             else {
                 account: values.get("annual_pace_points", {})
@@ -2501,7 +2507,11 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
             }
         )
         local_lagged_points = (
-            local_annual_pace_points(local_raw_root, lag_seconds=10)
+            local_annual_pace_points(
+                local_raw_root,
+                lag_seconds=10,
+                bucket_sizes={("chips", str(today.year)): 1},
+            )
             if local_raw_root is not None
             else {
                 account: values.get("annual_lagged_pace_points", {})
