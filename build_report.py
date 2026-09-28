@@ -142,7 +142,13 @@ def format_hours_minutes(seconds):
 def recent_intensity_markup(rows, today=None):
     today = today or date.today()
     start_date = today - timedelta(days=41)
+    current_monday = today - timedelta(days=today.weekday())
     weekly_totals = {}
+    weekly_totals[current_monday] = {
+        "has_run": False,
+        "run_seconds": 0,
+        **{key: 0 for key, _, _ in RUN_ZONE_PRESENTATION},
+    }
     for row in rows:
         if not start_date <= row[0] <= today:
             continue
@@ -178,7 +184,7 @@ def recent_intensity_markup(rows, today=None):
     items = []
     for week_start in sorted(weekly_totals, reverse=True):
         week = weekly_totals[week_start]
-        if not week["has_run"]:
+        if not week["has_run"] and week_start != current_monday:
             continue
         bar_width = (
             week["run_seconds"] / longest_week_seconds * 100
@@ -187,7 +193,13 @@ def recent_intensity_markup(rows, today=None):
         )
         zone_seconds = {key: week[key] for key, _, _ in RUN_ZONE_PRESENTATION}
         total_seconds = sum(zone_seconds.values())
-        if total_seconds:
+        if not week["has_run"]:
+            bar = (
+                '<span class="zone-bar zone-bar-unavailable" '
+                'title="No runs yet this week" '
+                'aria-label="No runs yet this week" style="width: 100%"></span>'
+            )
+        elif total_seconds:
             segments = []
             labels = []
             for key, label, color in RUN_ZONE_PRESENTATION:
@@ -219,7 +231,7 @@ def recent_intensity_markup(rows, today=None):
             )
         items.append(
             f'<div class="recent-intensity-week">'
-            f'<strong>{"Current week" if week_start == today - timedelta(days=today.weekday()) else f"Week {week_start.isocalendar().week}"}</strong>{bar}'
+            f'<strong>{"Current Week" if week_start == current_monday else f"Week {week_start.isocalendar().week}"}</strong>{bar}'
             f'<small class="recent-intensity-total">{format_hours_minutes(week["run_seconds"])}</small>'
             f'</div>'
         )
@@ -252,7 +264,13 @@ def cycling_activity_kind(sport):
 def recent_cycling_markup(rows, today=None):
     today = today or date.today()
     start_date = today - timedelta(days=41)
+    current_monday = today - timedelta(days=today.weekday())
     weekly_totals = {}
+    weekly_totals[current_monday] = {
+        "has_activity": False,
+        "cycling": 0,
+        "ebiking": 0,
+    }
     for row in rows:
         if not start_date <= row[0] <= today:
             continue
@@ -278,7 +296,7 @@ def recent_cycling_markup(rows, today=None):
     items = []
     for week_start in sorted(weekly_totals, reverse=True):
         week = weekly_totals[week_start]
-        if not week["has_activity"]:
+        if not week["has_activity"] and week_start != current_monday:
             continue
         total_seconds = week["cycling"] + week["ebiking"]
         bar_width = (
@@ -286,7 +304,14 @@ def recent_cycling_markup(rows, today=None):
             if longest_week_seconds
             else 100
         )
-        if total_seconds:
+        if not week["has_activity"]:
+            bar = (
+                '<span class="zone-bar zone-bar-unavailable" '
+                'title="No cycling or eBiking yet this week" '
+                'aria-label="No cycling or eBiking yet this week" '
+                'style="width: 100%"></span>'
+            )
+        elif total_seconds:
             segments = []
             labels = []
             for key, label, color in CYCLING_PRESENTATION:
@@ -315,7 +340,7 @@ def recent_cycling_markup(rows, today=None):
             )
         items.append(
             f'<div class="recent-intensity-week">'
-            f'<strong>Week {week_start.isocalendar().week}</strong>{bar}'
+            f'<strong>{"Current Week" if week_start == current_monday else f"Week {week_start.isocalendar().week}"}</strong>{bar}'
             f'<small class="recent-intensity-total">{int((total_seconds + 30) // 60)} min</small>'
             f'</div>'
         )
