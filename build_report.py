@@ -1329,7 +1329,7 @@ def long_run_markup(
     )
     route_json = json.dumps([[latitude, longitude] for latitude, longitude in sampled_route(route_points)])
     marker_scripts = []
-    marker_names = {"manga": "m", "chips": "c"}
+    marker_names = {"manga": "m"}
     for marker_account, marker_name in marker_names.items():
         marker_point = route_progress_point(
             route_points, completed_by_account.get(marker_account, 0)
@@ -1338,23 +1338,7 @@ def long_run_markup(
             route_points, completed_by_account_yesterday.get(marker_account, 0)
         )
         completed_km = completed_by_account.get(marker_account, 0) / 1000
-        other_account = next(
-            account for account in marker_names if account != marker_account
-        )
-        difference_km = (
-            completed_by_account.get(marker_account, 0)
-            - completed_by_account.get(other_account, 0)
-        ) / 1000
-        if abs(difference_km) < 0.05:
-            comparison = "level with the other user"
-        elif difference_km > 0:
-            comparison = f"{difference_km:.1f} km ahead of {other_account.title()}"
-        else:
-            comparison = f"{abs(difference_km):.1f} km behind {other_account.title()}"
-        tooltip = (
-            f"{marker_account.title()}: {completed_km:.1f} km completed; "
-            f"{comparison}"
-        )
+        tooltip = f"{marker_account.title()}: {completed_km:.1f} km completed"
         current_icon = (
             "{icon: L.divIcon({className: 'runner-marker runner-marker-"
             + marker_account
@@ -1391,7 +1375,6 @@ def long_run_markup(
             f'<div class="long-run-map" id="{map_id}"></div>'
             '<div class="long-run-map-key"><span><i class="route-key"></i>Race route</span>'
             '<span><i class="runner-key runner-key-manga"></i>m</span>'
-            '<span><i class="runner-key runner-key-chips"></i>c</span>'
             '<span><i class="runner-key runner-key-shadow"></i>Yesterday\'s location</span></div></div>'
             f"<script>(function() {{"
             f"const map = L.map('{map_id}', {{scrollWheelZoom: false}});"
@@ -1402,7 +1385,7 @@ def long_run_markup(
             "osm.addTo(map);"
             f"const route = L.polyline({route_json}, {{color: '#ef6546', weight: 4, opacity: 0.9}}).addTo(map);"
             f"{marker_script}"
-            "const runnerMarkers = [markerM, markerC];"
+            "const runnerMarkers = [markerM];"
             "map._trainingRunnerBounds = L.featureGroup(runnerMarkers).getBounds();"
             "map.fitBounds(map._trainingRunnerBounds, {padding: [48, 48], maxZoom: 15});"
             "L.control.layers({'OpenStreetMap': osm, 'Esri satellite': satellite}, {}).addTo(map);"
@@ -2258,8 +2241,8 @@ def _render_single_user(
         .user-panel.hidden {{ display: none; }}
         section {{ margin: 2.8rem 0; }}
         .section-heading {{ align-items: end; display: flex; justify-content: space-between; margin-bottom: 1rem; }}
-        .summary-grid {{ display: grid; gap: 1rem; grid-template-columns: repeat(4, minmax(0, 1fr)); }}
-        .summary-card {{ background: var(--card); border: 1px solid var(--ink); border-top: 5px solid var(--teal); padding: 1.15rem; }}
+        .summary-grid {{ display: grid; gap: 1rem; grid-template-columns: repeat(4, minmax(0, 1fr)); min-width: 0; }}
+        .summary-card {{ background: var(--card); border: 1px solid var(--ink); border-top: 5px solid var(--teal); min-width: 0; overflow: hidden; padding: 1.15rem; }}
         .summary-card:nth-child(2) {{ border-top-color: var(--accent); }}
         .summary-card:nth-child(3) {{ border-top-color: #d28a32; }}
         .summary-card:nth-child(4) {{ border-top-color: #755d8a; }}
@@ -2313,7 +2296,7 @@ def _render_single_user(
         .efficiency-columns {{ display: grid; gap: 1.2rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 0.8rem; }}
         .efficiency-columns ul {{ list-style: none; margin: 0.35rem 0 0; padding: 0; }}
         .efficiency-columns li {{ font-size: 0.78rem; margin: 0.18rem 0; }}
-        .run-scatter-shell {{ align-items: center; display: flex; gap: 0.8rem; margin-top: 0.7rem; }}
+        .run-scatter-shell {{ align-items: center; display: flex; gap: 0.8rem; margin-top: 0.7rem; min-width: 0; }}
         .run-scatter {{ flex: 1 1 auto; min-width: 0; }}
         .run-scatter text {{ fill: var(--muted); font: 0.62rem "DM Sans", sans-serif; }}
         .longest-run-note {{ border-left: 2px solid var(--teal); display: grid; gap: 0.15rem; padding-left: 0.7rem; white-space: nowrap; }}
@@ -2342,7 +2325,7 @@ def _render_single_user(
         .week-history-totals {{ color: var(--muted); float: right; font: 0.72rem "DM Sans", sans-serif; margin: 0.25rem 0.3rem 0 0; }}
         .week-group[open] summary {{ border-bottom: 1px solid var(--line); }}
         .week-group .calendar-grid {{ padding: 1rem; }}
-        .calendar-card {{ background: var(--card); border: 1px solid var(--line); margin: 1rem 0; padding: 1rem; }}
+        .calendar-card {{ background: var(--card); border: 1px solid var(--line); margin: 1rem 0; min-width: 0; padding: 1rem; }}
         .calendar-card h3 {{ border-bottom: 1px solid var(--line); padding-bottom: 0.8rem; }}
         .long-run {{ background: var(--card); border: 1px solid var(--accent); margin: 1rem 0; padding: 0 1rem; }}
         .long-run summary {{ cursor: pointer; font-family: "Space Grotesk", sans-serif; font-size: 1.15rem; font-weight: 600; list-style-position: inside; padding: 1rem 0; }}
@@ -2365,14 +2348,12 @@ def _render_single_user(
         .runner-key {{ background: var(--accent); border: 2px solid var(--ink); border-radius: 50%; height: 0.6rem !important; width: 0.6rem !important; }}
         .runner-marker {{ align-items: center; border: 2px solid var(--ink); border-radius: 50%; color: var(--paper); display: flex !important; font: 700 0.72rem/1 "Space Grotesk", sans-serif; height: 28px !important; justify-content: center; width: 28px !important; }}
         .runner-marker-manga {{ background: var(--teal); }}
-        .runner-marker-chips {{ background: #3d6fb6; }}
         .runner-marker-shadow {{ opacity: 0.42; }}
         .runner-key-manga {{ background: var(--teal); }}
-        .runner-key-chips {{ background: #3d6fb6; }}
         .runner-key-shadow {{ background: #68706b; opacity: 0.55; }}
         .leaflet-control-layers {{ border: 1px solid var(--ink) !important; border-radius: 0 !important; font: 0.72rem Arial, sans-serif; }}
         .calendar-grid {{ display: grid; gap: 0.6rem; grid-template-columns: repeat(7, minmax(0, 1fr)); }}
-        .calendar-day {{ background: var(--card); border: 1px solid var(--line); min-height: 8.5rem; padding: 0.6rem; }}
+        .calendar-day {{ background: var(--card); border: 1px solid var(--line); min-height: 8.5rem; min-width: 0; overflow: hidden; padding: 0.6rem; }}
         .calendar-day h4 {{ border-bottom: 1px solid var(--line); font: 600 0.8rem "Space Grotesk", sans-serif; margin: 0 0 0.6rem; padding-bottom: 0.45rem; }}
         .calendar-activities {{ min-height: 5rem; text-align: left; }}
         .activity {{ background: #e3eee8; border-left: 3px solid var(--teal); display: block; margin: 0 0 0.4rem; padding: 0.35rem; }}
