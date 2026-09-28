@@ -398,7 +398,7 @@ def run_scatter_markup(rows, today):
                     "mode": "markers",
                     "marker": {
                         "color": [
-                            "#1b6c68" if distance_km == max_distance else "#ef6546"
+                            "#355070" if distance_km == max_distance else "#b56576"
                             for distance_km, _, _, _ in points
                         ],
                         "size": [
@@ -905,6 +905,7 @@ def pace_by_hr_markup(
     today,
     zone_settings,
     annual_points=None,
+    annual_years=None,
     title="Pace vs Heart Rate",
 ):
     settings = next(
@@ -960,6 +961,7 @@ def pace_by_hr_markup(
             )
         ]
     else:
+        visible_years = set(annual_years or (label for label, _, _ in LOCAL_YEARS))
         series = [
             (
                 label,
@@ -971,6 +973,7 @@ def pace_by_hr_markup(
                 color,
             )
             for label, _, color in LOCAL_YEARS
+            if label in visible_years
             for points in [annual_points.get(label) or []]
         ]
     points = [point for _, series_points, _ in series for point in series_points]
@@ -2151,10 +2154,11 @@ def _render_single_user(
                 today,
                 zone_settings,
                 lagged_annual_points,
+                annual_years=(str(today.year),) if account_name == "chips" else None,
                 title="Pace vs Heart Rate",
             )
         )
-    if annual_points is not None:
+    if annual_points is not None and account_name != "chips":
         summary_cards.append(
             annual_summary_markup(
                 ROOT / "local_data",
@@ -2193,7 +2197,7 @@ def _render_single_user(
         "<div><p class=\"eyebrow\">Calendar view</p><h2>Current week</h2></div></div>"
         f"<article class=\"calendar-card\"><h3>Week {current_monday.isocalendar().week} · Current week</h3>"
         f"{week_calendar(rows, current_monday, current_monday + timedelta(days=6))}</article>"
-        f"{long_run_markup(rows, today, account_name, completed_by_account, completed_by_account_yesterday)}</section>"
+        f"{'' if account_name == 'chips' else long_run_markup(rows, today, account_name, completed_by_account, completed_by_account_yesterday)}</section>"
     )
 
     latest_data_date = max((row[0] for row in rows), default=None)
