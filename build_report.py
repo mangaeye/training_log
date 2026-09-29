@@ -1879,7 +1879,7 @@ def run_progress_pyramid_markup(rows, today):
     return (
         '<article class="summary-card pyramid-card">'
         "<h3>Run</h3>"
-        f'<div class="strength-pyramid run-progress-pyramid" role="img" aria-label="{filled_segments} of {RUN_PYRAMID_SEGMENTS} run pyramid segments filled">'
+        f'<div class="strength-pyramid" role="img" aria-label="{filled_segments} of {RUN_PYRAMID_SEGMENTS} run pyramid segments filled">'
         f"{''.join(segments)}</div>"
         "</article>"
     )
@@ -2255,7 +2255,6 @@ def _render_single_user(
         .pyramid-card h3 {{ align-self: end; font-size: 0.95rem; font-variant: small-caps; grid-column: 1; grid-row: 1 / 3; transform: rotate(180deg); white-space: nowrap; writing-mode: vertical-rl; }}
         .pyramid-card > .strength-pyramid, .pyramid-card > .pyramid-note {{ grid-column: 2; }}
         .strength-pyramid {{ align-items: center; display: flex; flex-direction: column; gap: 0.12rem; margin: 0.8rem auto; width: min(100%, 12rem); }}
-        .run-progress-pyramid {{ gap: 0.06rem; }}
         .pyramid-segment {{ background: var(--segment-color); border: 1px solid #d3d3d3; display: block; height: 0.42rem; }}
         .strength-progress-pyramid .pyramid-segment {{ height: 0.48rem; }}
         .pyramid-segment.filled {{ border-color: var(--segment-color); }}
