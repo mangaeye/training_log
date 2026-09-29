@@ -840,12 +840,12 @@ def annual_summary_markup(data_root, rows, account_name, derived_summary=None):
         for metric_index, metric in enumerate(metric_labels)
     )
     return (
-        '<article class="summary-card local-annual-card">'
-        "<h3>Annual Summary</h3>"
+        '<details class="summary-card local-annual-card" open>'
+        "<summary>Annual Summary</summary>"
         '<div class="table-wrap annual-table-wrap"><table class="annual-table">'
         '<thead><tr><th scope="col">Metric</th>'
         + "".join(f'<th scope="col">{label}</th>' for label, _, _ in LOCAL_YEARS)
-        + f"</tr></thead><tbody>{rows_markup}</tbody></table></div></article>"
+        + f"</tr></thead><tbody>{rows_markup}</tbody></table></div></details>"
     )
 
 
@@ -1812,16 +1812,18 @@ def strength_pyramid_markup(rows, today):
             (segment_number - 1) // STRENGTH_PYRAMID_COLOR_GROUP_SIZE
         ] if filled else "#ffffff"
         segments.append(
-            f'<span class="pyramid-segment{state}" style="width: {width:.2f}%; background: {color};" '
+            f'<span class="pyramid-segment{state}" style="width: {width:.2f}%; --segment-color: {color};" '
             f'aria-label="Strength pyramid segment {segment_number}: '
             f'{"filled" if filled else "empty"}"></span>'
         )
     return (
         '<article class="summary-card pyramid-card">'
-        "<h3>Strength progress pyramid</h3>"
-        f'<div class="strength-pyramid" role="img" aria-label="{filled_segments} of {STRENGTH_PYRAMID_SEGMENTS} strength pyramid segments filled">'
+        "<h3>Strength</h3>"
+        f'<div class="strength-pyramid strength-progress-pyramid" role="img" aria-label="{filled_segments} of {STRENGTH_PYRAMID_SEGMENTS} strength pyramid segments filled">'
         f"{''.join(segments)}</div>"
-        f"<p class=\"pyramid-note\">Start: {RUN_PYRAMID_EPOCH.strftime('%a %d %b %Y')} • Rule: log a strength workout by {due_date.strftime('%a %d %b')} to keep all your strength.</p>"
+        '<p class="pyramid-note strength-pyramid-note"><span>Log a strength workout by</span>'
+        f"<strong>{due_date.strftime('%a %d %b')}</strong>"
+        '<span>to keep all your strength.</span></p>'
         "</article>"
     )
 
@@ -1870,18 +1872,15 @@ def run_progress_pyramid_markup(rows, today):
             (segment_number - 1) // RUN_PYRAMID_COLOR_GROUP_SIZE
         ] if filled else "#ffffff"
         segments.append(
-            f'<span class="pyramid-segment{state}" style="width: {width:.2f}%; background: {color};" '
+            f'<span class="pyramid-segment{state}" style="width: {width:.2f}%; --segment-color: {color};" '
             f'aria-label="Run pyramid segment {segment_number}: '
             f'{"filled" if filled else "empty"}"></span>'
         )
-    note = f"Start: {epoch.strftime('%a %d %b %Y')}"
-    rule_text = "Rules: Runs completed each week 0 runs −2, 1 run 0, 2 runs +1, 3+ runs +2; current-week gains apply immediately"
     return (
         '<article class="summary-card pyramid-card">'
-        "<h3>Run progress pyramid</h3>"
-        f'<div class="strength-pyramid" role="img" aria-label="{filled_segments} of {RUN_PYRAMID_SEGMENTS} run pyramid segments filled">'
+        "<h3>Run</h3>"
+        f'<div class="strength-pyramid run-progress-pyramid" role="img" aria-label="{filled_segments} of {RUN_PYRAMID_SEGMENTS} run pyramid segments filled">'
         f"{''.join(segments)}</div>"
-        f"<p class=\"pyramid-note\">{html.escape(note)} • {html.escape(rule_text)}</p>"
         "</article>"
     )
 
@@ -2123,8 +2122,6 @@ def _render_single_user(
             # f"<div><dt>Avg sedentary/day</dt><dd>{format_duration(totals['average_sedentary'])}</dd></div>"
             "</dl></article>"
         )
-    summary_cards.append(strength_pyramid_markup(rows, today))
-    summary_cards.append(run_progress_pyramid_markup(rows, today))
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
     summary_cards.append(recent_intensity_markup(rows, today))
     if account_name != "chips":
@@ -2144,15 +2141,18 @@ def _render_single_user(
                 title="Pace vs Heart Rate",
             )
         )
-    if annual_points is not None and account_name != "chips":
-        summary_cards.append(
-            annual_summary_markup(
-                ROOT / "local_data",
-                rows,
-                account_name,
-                derived_summary=annual_summary,
-            )
+    annual_section = (
+        '<section class="annual-section">'
+        + annual_summary_markup(
+            ROOT / "local_data",
+            rows,
+            account_name,
+            derived_summary=annual_summary,
         )
+        + "</section>"
+        if annual_points is not None and account_name != "chips"
+        else ""
+    )
     if efficiency_stats is not None:
         summary_cards.append(efficiency_summary_markup(efficiency_stats))
     summary_cards.append(zone_legend_markup(zone_settings))
@@ -2242,17 +2242,25 @@ def _render_single_user(
         section {{ margin: 2.8rem 0; }}
         .section-heading {{ align-items: end; display: flex; justify-content: space-between; margin-bottom: 1rem; }}
         .summary-grid {{ display: grid; gap: 1rem; grid-template-columns: repeat(4, minmax(0, 1fr)); min-width: 0; }}
+        .shared-progress-grid {{ display: grid; gap: 1.5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        .pyramid-pair {{ display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        .pyramid-account-name {{ color: var(--muted); font: 700 0.72rem "DM Sans", sans-serif; margin: 0 0 0.6rem; text-transform: uppercase; }}
         .summary-card {{ background: var(--card); border: 1px solid var(--ink); border-top: 5px solid var(--teal); min-width: 0; overflow: hidden; padding: 1.15rem; }}
         .summary-card:nth-child(2) {{ border-top-color: var(--accent); }}
         .summary-card:nth-child(3) {{ border-top-color: #d28a32; }}
         .summary-card:nth-child(4) {{ border-top-color: #755d8a; }}
         .goal-card {{ border-top-color: var(--teal) !important; }}
         .strength-goal-card {{ border-top-color: #c8872d !important; }}
-        .pyramid-card {{ border-top-color: var(--ink) !important; }}
+        .pyramid-card {{ border-top-color: var(--ink) !important; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 0.5rem; }}
+        .pyramid-card h3 {{ align-self: end; font-size: 0.95rem; font-variant: small-caps; grid-column: 1; grid-row: 1 / 3; transform: rotate(180deg); white-space: nowrap; writing-mode: vertical-rl; }}
+        .pyramid-card > .strength-pyramid, .pyramid-card > .pyramid-note {{ grid-column: 2; }}
         .strength-pyramid {{ align-items: center; display: flex; flex-direction: column; gap: 0.12rem; margin: 0.8rem auto; width: min(100%, 12rem); }}
-        .pyramid-segment {{ background: #fff; border: 1px solid var(--ink); display: block; height: 0.42rem; }}
-        .pyramid-segment.filled {{ background: #c8872d; }}
+        .run-progress-pyramid {{ gap: 0.06rem; }}
+        .pyramid-segment {{ background: var(--segment-color); border: 1px solid #d3d3d3; display: block; height: 0.42rem; }}
+        .strength-progress-pyramid .pyramid-segment {{ height: 0.48rem; }}
+        .pyramid-segment.filled {{ border-color: var(--segment-color); }}
         .pyramid-note {{ color: var(--muted); font-size: 0.78rem; line-height: 1.35; margin: 0.7rem 0 0; }}
+        .strength-pyramid-note > * {{ display: block; }}
         .goal-count {{ font-size: 1.15rem; margin: 1rem 0 0.7rem; }}
         .goal-count strong {{ font-size: 1.8rem; }}
         .goal-track {{ background: var(--line); height: 0.55rem; overflow: hidden; }}
@@ -2289,7 +2297,7 @@ def _render_single_user(
         .pace-hr-legend input {{ accent-color: var(--teal); margin: 0; }}
         .pace-hr-legend i {{ border: 1px solid var(--ink); display: inline-block; height: 0.55rem; width: 0.55rem; }}
         .local-efficiency-card {{ grid-column: 1 / -1; }}
-        .local-annual-card {{ grid-column: 1 / -1; }}
+        .local-annual-card summary {{ cursor: pointer; font-family: "Space Grotesk", sans-serif; font-size: 1.2rem; font-weight: 600; }}
         .annual-table-wrap {{ margin-top: 0.7rem; }}
         .annual-table {{ min-width: 50rem; }}
         .annual-table th:first-child, .annual-table td:first-child {{ min-width: 12rem; }}
@@ -2376,10 +2384,14 @@ def _render_single_user(
         th {{ background: var(--accent-soft); color: var(--ink); font: 700 0.68rem Arial, sans-serif; letter-spacing: 0.06em; text-transform: uppercase; }}
         td {{ font-size: 0.95rem; }}
         tbody tr:hover {{ background: #fffaf5; }}
-        @media (max-width: 900px) {{ .summary-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
+        @media (max-width: 900px) {{
+            .summary-grid, .shared-progress-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            .pyramid-pair {{ grid-template-columns: 1fr; }}
+        }}
         @media (max-width: 520px) {{
             .page {{ padding-top: 1.5rem; }}
             .summary-grid {{ grid-template-columns: 1fr; }}
+            .shared-progress-grid, .pyramid-pair {{ grid-template-columns: 1fr; }}
             .section-heading {{ align-items: start; flex-direction: column; gap: 0.35rem; }}
             .summary-card {{ padding: 1rem; }}
             .intensity-card {{ grid-column: auto; }}
@@ -2389,7 +2401,7 @@ def _render_single_user(
             .pace-hr-card {{ grid-column: 1 / -1; }}
             .lagged-pace-hr-card .run-scatter {{ max-width: 100%; }}
             .local-efficiency-card {{ grid-column: 1 / -1; }}
-            .local-annual-card {{ grid-column: 1 / -1; padding: 0.8rem; }}
+            .local-annual-card {{ padding: 0.8rem; }}
             .annual-table {{ min-width: 42rem; }}
             .annual-table th, .annual-table td {{ padding: 0.55rem 0.45rem; }}
             .account-switch {{ align-items: stretch; flex-wrap: wrap; }}
@@ -2434,6 +2446,7 @@ def _render_single_user(
             <div class="section-heading"><div><p class="eyebrow">Daily detail</p><h2>Activity history by week</h2></div></div>
             {content}
         </section>
+        {annual_section}
     </main>
 </body>
 </html>
@@ -2546,6 +2559,26 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
                 f'data-account="{html.escape(account_name)}" aria-pressed="{"true" if index == 0 else "false"}">{html.escape(account_name)}</button>'
                 for index, account_name in enumerate(rows_by_account)
         )
+        run_rules = (
+            f"Start: {RUN_PYRAMID_EPOCH.strftime('%a %d %b %Y')} • "
+            "Rules: Runs completed each week 0 runs −2, 1 run 0, 2 runs +1, "
+            "3+ runs +2; current-week gains apply immediately"
+        )
+        shared_progress = (
+            '<section class="shared-progress"><div class="section-heading">'
+            '<div><p class="eyebrow">All accounts</p><h2>Progress pyramids</h2></div>'
+            '</div><div class="shared-progress-grid">'
+            + "".join(
+                '<div class="pyramid-account">'
+                f'<p class="pyramid-account-name">{html.escape(account_name)}</p>'
+                '<div class="pyramid-pair">'
+                + strength_pyramid_markup(account_rows, today)
+                + run_progress_pyramid_markup(account_rows, today)
+                + '</div></div>'
+                for account_name, account_rows in rows_by_account.items()
+            )
+            + f'</div><p class="pyramid-note">{html.escape(run_rules)}</p></section>'
+        )
         switcher = (
                 '<nav class="account-switch" aria-label="Select training account">'
                 '<span class="account-switch-label">View data for</span>'
@@ -2629,6 +2662,7 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
         return (
                 head
                 + "<body><main class=\"page\">"
+                + shared_progress
                 + switcher
                 + "".join(panels)
                 + "</main>"
