@@ -143,11 +143,14 @@ def recent_intensity_markup(rows, today=None):
     today = today or date.today()
     start_date = today - timedelta(days=41)
     current_monday = today - timedelta(days=today.weekday())
-    weekly_totals = {}
-    weekly_totals[current_monday] = {
-        "has_run": False,
-        "run_seconds": 0,
-        **{key: 0 for key, _, _ in RUN_ZONE_PRESENTATION},
+    first_monday = start_date - timedelta(days=start_date.weekday())
+    weekly_totals = {
+        first_monday + timedelta(weeks=offset): {
+            "has_run": False,
+            "run_seconds": 0,
+            **{key: 0 for key, _, _ in RUN_ZONE_PRESENTATION},
+        }
+        for offset in range((current_monday - first_monday).days // 7 + 1)
     }
     for row in rows:
         if not start_date <= row[0] <= today:
@@ -184,8 +187,6 @@ def recent_intensity_markup(rows, today=None):
     items = []
     for week_start in sorted(weekly_totals, reverse=True):
         week = weekly_totals[week_start]
-        if not week["has_run"] and week_start != current_monday:
-            continue
         bar_width = (
             week["run_seconds"] / longest_week_seconds * 100
             if longest_week_seconds
@@ -194,10 +195,11 @@ def recent_intensity_markup(rows, today=None):
         zone_seconds = {key: week[key] for key, _, _ in RUN_ZONE_PRESENTATION}
         total_seconds = sum(zone_seconds.values())
         if not week["has_run"]:
+            empty_label = "No runs yet this week" if week_start == current_monday else "No runs recorded this week"
             bar = (
                 '<span class="zone-bar zone-bar-unavailable" '
-                'title="No runs yet this week" '
-                'aria-label="No runs yet this week" style="width: 100%"></span>'
+                f'title="{empty_label}" '
+                f'aria-label="{empty_label}" style="width: 100%"></span>'
             )
         elif total_seconds:
             segments = []
@@ -265,11 +267,14 @@ def recent_cycling_markup(rows, today=None):
     today = today or date.today()
     start_date = today - timedelta(days=41)
     current_monday = today - timedelta(days=today.weekday())
-    weekly_totals = {}
-    weekly_totals[current_monday] = {
-        "has_activity": False,
-        "cycling": 0,
-        "ebiking": 0,
+    first_monday = start_date - timedelta(days=start_date.weekday())
+    weekly_totals = {
+        first_monday + timedelta(weeks=offset): {
+            "has_activity": False,
+            "cycling": 0,
+            "ebiking": 0,
+        }
+        for offset in range((current_monday - first_monday).days // 7 + 1)
     }
     for row in rows:
         if not start_date <= row[0] <= today:
@@ -296,8 +301,6 @@ def recent_cycling_markup(rows, today=None):
     items = []
     for week_start in sorted(weekly_totals, reverse=True):
         week = weekly_totals[week_start]
-        if not week["has_activity"] and week_start != current_monday:
-            continue
         total_seconds = week["cycling"] + week["ebiking"]
         bar_width = (
             total_seconds / longest_week_seconds * 100
@@ -305,10 +308,11 @@ def recent_cycling_markup(rows, today=None):
             else 100
         )
         if not week["has_activity"]:
+            empty_label = "No cycling or eBiking yet this week" if week_start == current_monday else "No cycling or eBiking recorded this week"
             bar = (
                 '<span class="zone-bar zone-bar-unavailable" '
-                'title="No cycling or eBiking yet this week" '
-                'aria-label="No cycling or eBiking yet this week" '
+                f'title="{empty_label}" '
+                f'aria-label="{empty_label}" '
                 'style="width: 100%"></span>'
             )
         elif total_seconds:

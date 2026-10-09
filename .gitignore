@@ -9,3 +9,4 @@ build_local_report.ps1
 site/index.html
 local_data/
 local_site/
+marlo_dot/
