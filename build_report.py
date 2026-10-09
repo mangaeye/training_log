@@ -359,9 +359,134 @@ def recent_cycling_markup(rows, today=None):
     )
 
 
+def daily_distance_markup(rows, today, account_name):
+    start_date = today - timedelta(days=29)
+    daily_meters = {
+        start_date + timedelta(days=offset): 0.0 for offset in range(30)
+    }
+    cycling_meters = dict.fromkeys(daily_meters, 0.0)
+    for row in rows:
+        if row[0] not in daily_meters:
+            continue
+        daily_meters[row[0]] += float(row[1] or 0)
+        for activity in row[6]:
+            if cycling_activity_kind(activity.get("sport")) is None:
+                continue
+            try:
+                distance = float(activity.get("distance_meters", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(distance) and distance > 0:
+                cycling_meters[row[0]] += distance
+    days = list(daily_meters)
+    distances = [daily_meters[day] / 1000 for day in days]
+    cycling_distances = [
+        min(cycling_meters[day], max(daily_meters[day], 0)) / 1000
+        for day in days
+    ]
+    other_distances = [
+        distance - cycling for distance, cycling in zip(distances, cycling_distances)
+    ]
+    customdata = [
+        [day.strftime("%a %d %b %Y"), daily_meters[day] / 1000, cycling_meters[day] / 1000]
+        for day in days
+    ]
+    total_km = sum(distances)
+    average_km = total_km / len(days)
+    foot_average_km = sum(other_distances) / len(days)
+    korea_start = date(2026, 10, 11)
+    korea_end = date(2026, 10, 22)
+    default_color = "#1b6c68" if account_name == "manga" else "#ef6546"
+    plotly_data = json.dumps(
+        {
+            "data": [{
+                "type": "bar",
+                "name": "By foot",
+                "x": [day.isoformat() for day in days],
+                "y": other_distances,
+                "customdata": customdata,
+                "marker": {"color": [
+                    "#b88716" if korea_start <= day <= korea_end else default_color
+                    for day in days
+                ]},
+                "hovertemplate": "%{customdata[0]}<br>By foot: %{y:.2f} km<br>Daily total: %{customdata[1]:.2f} km<extra></extra>",
+            }, {
+                "type": "bar",
+                "name": "Cycling / eBiking",
+                "x": [day.isoformat() for day in days],
+                "y": cycling_distances,
+                "customdata": customdata,
+                "marker": {
+                    "color": "#d9d8cf",
+                    "pattern": {
+                        "shape": "/", "fillmode": "replace",
+                        "bgcolor": "#d9d8cf", "fgcolor": "#c1c2ba",
+                        "size": 8, "solidity": 0.5,
+                    },
+                },
+                "hovertemplate": "%{customdata[0]}<br>Cycling portion: %{y:.2f} km<br>Recorded cycling / eBiking: %{customdata[2]:.2f} km<br>Daily total: %{customdata[1]:.2f} km<extra></extra>",
+            }],
+            "layout": {
+                "margin": {"l": 48, "r": 12, "t": 44, "b": 48},
+                "paper_bgcolor": "rgba(0,0,0,0)",
+                "plot_bgcolor": "rgba(0,0,0,0)",
+                "font": {"family": "DM Sans, sans-serif", "color": "#171b19"},
+                "bargap": 0.2,
+                "barmode": "stack",
+                "legend": {"orientation": "h", "x": 0, "y": 1.2, "font": {"size": 10}},
+                "shapes": [{
+                    "type": "line", "xref": "paper", "x0": 0, "x1": 1,
+                    "yref": "y", "y0": average_km, "y1": average_km,
+                    "line": {"color": "rgba(80, 87, 82, 0.55)", "width": 1, "dash": "dash"},
+                }, {
+                    "type": "line", "xref": "paper", "x0": 0, "x1": 1,
+                    "yref": "y", "y0": foot_average_km, "y1": foot_average_km,
+                    "line": {"color": default_color, "width": 1, "dash": "dot"},
+                    "opacity": 0.55,
+                }],
+                "annotations": [{
+                    "xref": "paper", "x": 1, "xanchor": "right",
+                    "yref": "y", "y": average_km, "yanchor": "bottom", "yshift": 3,
+                    "text": f"Total avg {average_km:.2f} km/day", "showarrow": False,
+                    "font": {"size": 10, "color": "#606961"},
+                    "bgcolor": "rgba(255, 255, 255, 0.8)",
+                }, {
+                    "xref": "paper", "x": 0, "xanchor": "left",
+                    "yref": "y", "y": foot_average_km, "yanchor": "top", "yshift": -3,
+                    "text": f"By foot avg {foot_average_km:.2f} km/day", "showarrow": False,
+                    "font": {"size": 10, "color": default_color},
+                    "bgcolor": "rgba(255, 255, 255, 0.8)",
+                }],
+                "hovermode": "x",
+                "xaxis": {
+                    "type": "date", "tickformat": "%d %b", "nticks": 6,
+                    "showgrid": False, "fixedrange": True,
+                },
+                "yaxis": {
+                    "title": "km", "rangemode": "tozero", "gridcolor": "#cfd1c6",
+                    "zeroline": False, "fixedrange": True,
+                    **({"range": [0, 1]} if not total_km else {}),
+                },
+            },
+            "config": {"responsive": True, "displayModeBar": False},
+        },
+        separators=(",", ":"),
+    )
+    return (
+        '<article class="summary-card run-scatter-card daily-distance-card">'
+        '<h3>Korea Walking Fun</h3>'
+        f'<p class="goal-count"><strong>{total_km:.2f}</strong> km</p>'
+        f'<p class="summary-period">{format_date(start_date)} to {format_date(today)}</p>'
+        f'<div class="plotly-daily-distance-chart" id="daily-distance-{html.escape(account_name)}" '
+        f'data-plotly-config="{html.escape(plotly_data)}" role="img" '
+        f'aria-label="Daily Garmin summary distance over 30 days, stacked into other distance and shaded cycling or eBiking; total {total_km:.2f} kilometres"></div>'
+        '</article>'
+    )
+
+
 def run_scatter_markup(rows, today):
     points = []
-    start_date = today - timedelta(days=27)
+    start_date = today - timedelta(days=89)
     for row in rows:
         if not start_date <= row[0] <= today:
             continue
@@ -380,13 +505,34 @@ def run_scatter_markup(rows, today):
     if not points:
         return (
             '<article class="summary-card run-scatter-card">'
-            "<h3>Last 28 days - Run Distance vs Average HR</h3>"
-            '<p class="goal-message">No running distance and heart-rate data in the last 28 days.</p>'
+            "<h3>Last 90 days</h3>"
+            '<p class="goal-message">No running distance and heart-rate data in the last 90 days.</p>'
             "</article>"
         )
 
     max_distance = max(point[0] for point in points)
-    safe_long_run_km = max_distance * 1.1
+    recent_start = today - timedelta(days=27)
+    recent_distances = [
+        distance_km for distance_km, _, activity_date, _ in points
+        if activity_date >= recent_start
+    ]
+    recent_max_distance = max(recent_distances, default=None)
+    highlighted_points = [
+        activity_date >= recent_start and distance_km == recent_max_distance
+        for distance_km, _, activity_date, _ in points
+    ]
+    longest_run_label = f"{recent_max_distance:.2f} km" if recent_max_distance is not None else "No recent runs"
+    if recent_distances:
+        safe_long_run_km = recent_max_distance * 1.1
+        long_run_message = (
+            f'<p class="goal-message"><strong>{safe_long_run_km:.2f} kms is the longest run</strong> '
+            'you can safely do while minimising injury risk. This is the longest run from the last 28 days '
+            '+ 10%, based on Frandsen et al., British Journal of Sports Medicine, 2025. A 5,205-runner, '
+            '18-month, 588,071-session prospective cohort study - the largest dataset ever used to analyse '
+            'running-load spikes and injury risk.</p>'
+        )
+    else:
+        long_run_message = '<p class="goal-message">No runs with distance and heart-rate data in the last 28 days to calculate the 28-day longest-run benchmark.</p>'
     min_hr = min(point[1] for point in points)
     max_hr = max(point[1] for point in points)
     distance_scale = max(max_distance * 1.1, 1)
@@ -402,12 +548,16 @@ def run_scatter_markup(rows, today):
                     "mode": "markers",
                     "marker": {
                         "color": [
-                            "#355070" if distance_km == max_distance else "#b56576"
-                            for distance_km, _, _, _ in points
+                            "#355070" if highlighted else "#b56576"
+                            for highlighted in highlighted_points
                         ],
                         "size": [
-                            10 if distance_km == max_distance else 7
-                            for distance_km, _, _, _ in points
+                            10 if highlighted else 7
+                            for highlighted in highlighted_points
+                        ],
+                        "opacity": [
+                            1 - ((today - activity_date).days // 7) * 0.05
+                            for _, _, activity_date, _ in points
                         ],
                         "line": {"color": "#171b19", "width": 1},
                     },
@@ -448,17 +598,13 @@ def run_scatter_markup(rows, today):
     chart_id = f"plotly-run-scatter-chart-{id(points)}"
     return (
         '<article class="summary-card run-scatter-card">'
-        "<h3>Last 28 days - Run Distance vs Average HR</h3>"
+        "<h3>Last 90 days</h3>"
         f'<div class="run-scatter-shell"><div class="plotly-run-scatter-chart" '
         f'id="{chart_id}" data-plotly-config="{html.escape(plotly_data)}" '
-        'role="img" aria-label="Running distance versus average heart rate for the last 28 days"></div>'
-        f'<aside class="longest-run-note"><strong>Longest Run</strong>'
-        f'<span>{max_distance:.2f} km</span></aside></div>'
-        f'<p class="goal-message"><strong>{safe_long_run_km:.2f} kms is the longest run</strong> '
-        'you can safely do while minimising injury risk. This is the longest run from the last 28 days '
-        '+ 10%, based on Frandsen et al., British Journal of Sports Medicine, 2025. A 5,205-runner, '
-        '18-month, 588,071-session prospective cohort study - the largest dataset ever used to analyse '
-        'running-load spikes and injury risk.</p>'
+        'role="img" aria-label="Running distance versus average heart rate for the last 90 days"></div>'
+        f'<aside class="longest-run-note"><strong>Longest Run (28 days)</strong>'
+        f'<span>{longest_run_label}</span></aside></div>'
+        f'{long_run_message}'
         "</article>"
     )
 
@@ -2130,6 +2276,7 @@ def _render_single_user(
     summary_cards.append(recent_intensity_markup(rows, today))
     if account_name != "chips":
         summary_cards.append(recent_cycling_markup(rows, today))
+    summary_cards.append(daily_distance_markup(rows, today, account_name))
     summary_cards.append(run_scatter_markup(rows, today))
     if annual_points is None:
         summary_cards.append(pace_by_hr_markup(rows, today, zone_settings))
@@ -2291,6 +2438,7 @@ def _render_single_user(
         .lagged-pace-hr-card .run-scatter {{ display: block; max-width: 38rem; width: 100%; }}
         .plotly-pace-chart {{ min-height: 22rem; width: 100%; }}
         .plotly-run-scatter-chart {{ flex: 1 1 auto; min-height: 22rem; min-width: 0; width: 100%; }}
+        .plotly-daily-distance-chart {{ height: 18rem; min-width: 0; width: 100%; }}
         .lagged-pace-hr-card .pace-hr-legend {{ font-size: 0.82rem; gap: 0.9rem 1.2rem; margin-top: 0.8rem; }}
         .lagged-pace-hr-card .pace-hr-legend label {{ cursor: pointer; min-height: 1.6rem; }}
         .lagged-pace-hr-card .pace-hr-legend input {{ height: 1rem; width: 1rem; }}
