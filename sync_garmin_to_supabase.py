@@ -20,6 +20,9 @@ from garminconnect import (
 ROOT = Path(__file__).resolve().parent
 logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 ACCOUNT_NAMES = ("manga", "chips")
+# Activities such as rucking are often retyped in Garmin Connect after the day
+# is finalized, so recent days have their activities re-fetched on every run.
+RECENT_ACTIVITY_REFRESH_DAYS = 14
 
 
 def load_env_file():
@@ -254,7 +257,7 @@ def activity_type_key(activity: dict[str, Any]) -> str:
 def category_for_sport(sport: str) -> str:
     if sport in {"running", "cycling", "walking", "swimming"}:
         return "cardio"
-    if sport in {"hiking"}:
+    if sport in {"hiking", "rucking"}:
         return "outdoor"
     if sport in {"strength_training"}:
         return "strength"
@@ -503,6 +506,85 @@ def upsert_daily_sport_total(
     )
 
 
+def sync_day_activities(
+    cur,
+    garmin: Garmin,
+    account_name: str,
+    user_id: str,
+    current: date,
+    zone_settings: list[dict[str, Any]],
+    save_details: bool,
+) -> int:
+    date_string = current.isoformat()
+    activities = garmin.get_activities_by_date(
+        date_string,
+        date_string,
+        sortorder="asc",
+    ) or []
+    # Rebuilt from scratch so a retyped activity does not leave stale totals
+    # under its previous sport.
+    cur.execute(
+        "DELETE FROM daily_sport_totals WHERE user_id = %s AND summary_date = %s",
+        (user_id, current),
+    )
+    aggregates: dict[str, list[float]] = {}
+    for activity in activities:
+        sport = activity_type_key(activity)
+        zone_seconds = normalize_hr_zone_seconds(activity)
+        pace_by_hr_bucket: dict[str, dict[str, float]] = {}
+        if sport == "running":
+            try:
+                details = garmin.get_activity_details(str(activity.get("activityId")))
+            except Exception as exc:
+                logging.warning(
+                    "Could not fetch activity details for activity %s: %s",
+                    activity.get("activityId"),
+                    exc,
+                )
+            else:
+                if save_details:
+                    save_activity_details(
+                        account_name,
+                        current,
+                        str(activity.get("activityId")),
+                        details,
+                    )
+                if not zone_seconds:
+                    zone_seconds = normalize_hr_zone_seconds(details)
+                    if not zone_seconds:
+                        zone_seconds = hr_zone_seconds_from_details(
+                            details, zone_settings
+                        )
+                pace_by_hr_bucket = pace_by_hr_bucket_from_details(details)
+        _, sport = upsert_activity(
+            cur,
+            user_id,
+            activity,
+            hr_zone_seconds=zone_seconds,
+            pace_by_hr_bucket=pace_by_hr_bucket,
+        )
+        values = aggregates.setdefault(sport, [0, 0, 0, 0])
+        values[0] += 1
+        values[1] += float(activity.get("distance", 0) or 0)
+        values[2] += float(
+            activity.get("duration", activity.get("elapsedDuration", 0)) or 0
+        )
+        values[3] += float(activity.get("calories", 0) or 0)
+
+    for sport, values in aggregates.items():
+        upsert_daily_sport_total(
+            cur,
+            user_id,
+            current,
+            sport,
+            int(values[0]),
+            values[1],
+            int(values[2]),
+            int(values[3]),
+        )
+    return len(activities)
+
+
 def sync_account(
     account_name: str,
     start_date: date,
@@ -552,7 +634,14 @@ def sync_account(
                 )
             ]
             skipped_count = len(stored_statuses) - len(refresh_dates)
-            if not dates_to_sync:
+            window_start = max(start_date, today - timedelta(days=RECENT_ACTIVITY_REFRESH_DAYS - 1))
+            synced_dates = set(dates_to_sync)
+            activity_refresh_dates = [
+                window_start + timedelta(days=offset)
+                for offset in range((min(end_date, today) - window_start).days + 1)
+                if window_start + timedelta(days=offset) not in synced_dates
+            ]
+            if not dates_to_sync and not activity_refresh_dates:
                 print(
                     f"No dates to sync from {start_date} through {end_date}; "
                     f"skipped {skipped_count} stored historical days."
@@ -572,69 +661,14 @@ def sync_account(
                 )
                 summary_count += 1
 
-                activities = garmin.get_activities_by_date(
-                    date_string,
-                    date_string,
-                    sortorder="asc",
-                ) or []
-                aggregates: dict[str, list[float]] = {}
-                for activity in activities:
-                    sport = activity_type_key(activity)
-                    zone_seconds = normalize_hr_zone_seconds(activity)
-                    pace_by_hr_bucket: dict[str, dict[str, float]] = {}
-                    if sport == "running":
-                        try:
-                            details = garmin.get_activity_details(
-                                str(activity.get("activityId"))
-                            )
-                        except Exception as exc:
-                            logging.warning(
-                                "Could not fetch activity details for activity %s: %s",
-                                activity.get("activityId"),
-                                exc,
-                            )
-                        else:
-                            if save_details:
-                                save_activity_details(
-                                    account_name,
-                                    current,
-                                    str(activity.get("activityId")),
-                                    details,
-                                )
-                            if not zone_seconds:
-                                zone_seconds = normalize_hr_zone_seconds(details)
-                                if not zone_seconds:
-                                    zone_seconds = hr_zone_seconds_from_details(
-                                        details, zone_settings
-                                    )
-                            pace_by_hr_bucket = pace_by_hr_bucket_from_details(details)
-                    _, sport = upsert_activity(
-                        cur,
-                        user_id,
-                        activity,
-                        hr_zone_seconds=zone_seconds,
-                        pace_by_hr_bucket=pace_by_hr_bucket,
-                    )
-                    activity_count += 1
-                    values = aggregates.setdefault(sport, [0, 0, 0, 0])
-                    values[0] += 1
-                    values[1] += float(activity.get("distance", 0) or 0)
-                    values[2] += float(
-                        activity.get("duration", activity.get("elapsedDuration", 0)) or 0
-                    )
-                    values[3] += float(activity.get("calories", 0) or 0)
+                activity_count += sync_day_activities(
+                    cur, garmin, account_name, user_id, current, zone_settings, save_details
+                )
 
-                for sport, values in aggregates.items():
-                    upsert_daily_sport_total(
-                        cur,
-                        user_id,
-                        current,
-                        sport,
-                        int(values[0]),
-                        values[1],
-                        int(values[2]),
-                        int(values[3]),
-                    )
+            for current in activity_refresh_dates:
+                activity_count += sync_day_activities(
+                    cur, garmin, account_name, user_id, current, zone_settings, save_details
+                )
         conn.commit()
     except Exception:
         conn.rollback()

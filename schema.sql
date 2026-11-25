@@ -134,6 +134,7 @@ VALUES
     ('walking', 'cardio'),
     ('swimming', 'cardio'),
     ('hiking', 'outdoor'),
+    ('rucking', 'outdoor'),
     ('strength_training', 'strength'),
     ('yoga', 'wellness'),
     ('other', 'other')

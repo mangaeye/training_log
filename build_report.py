@@ -484,6 +484,271 @@ def daily_distance_markup(rows, today, account_name):
     )
 
 
+HIKING_FITNESS_START = date(2026, 11, 2)
+HIKING_FITNESS_WEEKS = 12
+HIKING_GOAL_WEIGHT_KG = 15
+HIKING_GOAL_KM = 20
+HIKING_GOAL_HOURS = 4
+HIKING_WEIGHT_STEP_KG = 2
+HIKING_DISTANCE_STEP = 1.10
+HIKING_HOLD_WEEK_EVERY = 4
+HIKING_LOAD_JUMP = 1.10
+
+
+def hiking_weekly_summary(rows):
+    """Per week: best rucking hike (highest average of weight % and distance %,
+    each as a percentage of the hiking goal) plus total km x kg load."""
+    weeks = [{"best": None, "load": 0.0, "count": 0} for _ in range(HIKING_FITNESS_WEEKS)]
+    for row in rows:
+        week_index = (row[0] - HIKING_FITNESS_START).days // 7
+        if not 0 <= week_index < HIKING_FITNESS_WEEKS:
+            continue
+        for activity in row[6]:
+            if str(activity.get("sport", "")).lower() != "rucking":
+                continue
+            distance_km = float(activity.get("distance_meters") or 0) / 1000
+            seconds = float(activity.get("duration_seconds") or 0)
+            weight_kg = float(activity.get("ruck_weight_kg") or 0)
+            weight_pct = min(weight_kg / HIKING_GOAL_WEIGHT_KG, 1) * 100
+            distance_pct = min(
+                max(distance_km / HIKING_GOAL_KM, seconds / 3600 / HIKING_GOAL_HOURS), 1
+            ) * 100
+            candidate = {
+                "km": distance_km,
+                "seconds": seconds,
+                "kg": weight_kg,
+                "weight_pct": weight_pct,
+                "distance_pct": distance_pct,
+                "overall_pct": (weight_pct + distance_pct) / 2,
+            }
+            week = weeks[week_index]
+            week["load"] += distance_km * weight_kg
+            week["count"] += 1
+            if week["best"] is None or candidate["overall_pct"] > week["best"]["overall_pct"]:
+                week["best"] = candidate
+    return weeks
+
+
+def hiking_optimal_path(start_index, weight_pct, distance_pct, interval):
+    """Weekly (weight %, distance %) if one factor is stepped up every `interval`
+    weeks from the first hike: weight +2 kg and distance +10% alternately, with
+    every 4th week held. Returns None for weeks before the first hike."""
+    weight_step = HIKING_WEIGHT_STEP_KG / HIKING_GOAL_WEIGHT_KG * 100
+    path = [None] * HIKING_FITNESS_WEEKS
+    steps = 0
+    for index in range(start_index, HIKING_FITNESS_WEEKS):
+        offset = index - start_index
+        is_step_week = (
+            offset > 0
+            and offset % interval == 0
+            and offset % HIKING_HOLD_WEEK_EVERY != HIKING_HOLD_WEEK_EVERY - 1
+        )
+        if is_step_week:
+            if weight_pct < 100 and (steps % 2 == 0 or distance_pct >= 100):
+                weight_pct = min(100, weight_pct + weight_step)
+                steps += 1
+            elif distance_pct < 100:
+                distance_pct = min(100, distance_pct * HIKING_DISTANCE_STEP)
+                steps += 1
+        path[index] = (weight_pct, distance_pct)
+    return path
+
+
+def hiking_optimal_band(weeks):
+    """(fast, slow) optimal paths, or (None, None) before any hike is logged."""
+    start_index = next((i for i, week in enumerate(weeks) if week["best"]), None)
+    if start_index is None:
+        return None, None
+    base = weeks[start_index]["best"]
+    return tuple(
+        hiking_optimal_path(start_index, base["weight_pct"], base["distance_pct"], interval)
+        for interval in (1, 2)
+    )
+
+
+def hiking_chart_layout(week_starts, y_title, percent=True):
+    layout = {
+        "margin": {"l": 52, "r": 12, "t": 12, "b": 48},
+        "paper_bgcolor": "rgba(0,0,0,0)",
+        "plot_bgcolor": "rgba(0,0,0,0)",
+        "font": {"family": "DM Sans, sans-serif", "color": "#171b19"},
+        "bargap": 0.25,
+        "showlegend": False,
+        "xaxis": {
+            "type": "date", "tickformat": "%d %b",
+            "tickvals": [week.isoformat() for week in week_starts],
+            "title": "Week starting", "showgrid": False, "fixedrange": True,
+        },
+        "yaxis": {
+            "title": y_title, "gridcolor": "#cfd1c6", "zeroline": False, "fixedrange": True,
+            **({"range": [0, 105], "ticksuffix": "%"} if percent else {"rangemode": "tozero"}),
+        },
+    }
+    if percent:
+        layout["shapes"] = [{
+            "type": "line", "xref": "paper", "x0": 0, "x1": 1, "yref": "y", "y0": 100, "y1": 100,
+            "line": {"color": "rgba(80, 87, 82, 0.6)", "width": 1, "dash": "dash"},
+        }]
+    return layout
+
+
+def hiking_band_traces(x, fast, slow, color_rgb, name):
+    """Shaded area between the fast and slow optimal progression paths."""
+    lower = [round(min(a, b), 1) if a is not None else None for a, b in zip(fast, slow)]
+    upper = [round(max(a, b), 1) if a is not None else None for a, b in zip(fast, slow)]
+    invisible = {"color": "rgba(0,0,0,0)", "width": 0, "shape": "hv"}
+    return [
+        {"type": "scatter", "mode": "lines", "x": x, "y": lower, "line": invisible,
+         "hoverinfo": "skip", "showlegend": False, "connectgaps": False},
+        {"type": "scatter", "mode": "lines", "x": x, "y": upper, "line": invisible,
+         "fill": "tonexty", "fillcolor": f"rgba({color_rgb},0.2)", "name": name,
+         "hoverinfo": "skip", "connectgaps": False},
+    ]
+
+
+def hiking_fitness_markup(rows, account_name):
+    week_starts = [
+        HIKING_FITNESS_START + timedelta(weeks=index)
+        for index in range(HIKING_FITNESS_WEEKS)
+    ]
+    weeks = hiking_weekly_summary(rows)
+    best = [week["best"] for week in weeks]
+    x = [week.isoformat() for week in week_starts]
+    customdata = [
+        [
+            week.strftime("%d %b"),
+            f"{hike['km']:.2f}",
+            format_run_duration(hike["seconds"]),
+            f"{hike['kg']:g}",
+            round(hike["weight_pct"]),
+            round(hike["distance_pct"]),
+        ] if hike else [week.strftime("%d %b"), "", "", "", 0, 0]
+        for week, hike in zip(week_starts, best)
+    ]
+    fast, slow = hiking_optimal_band(weeks)
+    if fast is None:
+        fast = slow = [None] * HIKING_FITNESS_WEEKS
+
+    def path_values(index):
+        return (
+            [step[index] if step else None for step in fast],
+            [step[index] if step else None for step in slow],
+        )
+
+    def average_values(paths):
+        return [(step[0] + step[1]) / 2 if step else None for step in paths]
+
+    def chart_config(data, layout):
+        return {"data": data, "layout": layout, "config": {"responsive": True, "displayModeBar": False}}
+
+    legend_layout = {
+        "showlegend": True,
+        "legend": {"orientation": "h", "x": 0, "y": 1.0, "yanchor": "bottom", "font": {"size": 10}},
+        "margin": {"l": 52, "r": 12, "t": 56, "b": 48},
+    }
+    hover_hike = "Best hike: %{customdata[1]} km · %{customdata[2]} · %{customdata[3]} kg"
+    overall = chart_config(
+        hiking_band_traces(x, average_values(fast), average_values(slow), "53,80,112", "Optimal range")
+        + [{
+            "type": "scatter", "mode": "lines+markers", "name": "Overall", "x": x,
+            "y": [round(hike["overall_pct"], 1) if hike else None for hike in best],
+            "customdata": customdata,
+            "line": {"color": "#355070", "width": 2}, "marker": {"color": "#355070", "size": 8},
+            "connectgaps": False,
+            "hovertemplate": (
+                "Week of %{customdata[0]}<br>Overall: %{y:.0f}%<br>"
+                "Weight %{customdata[4]}% · distance %{customdata[5]}%<br>"
+                f"{hover_hike}<extra></extra>"
+            ),
+        }],
+        {**hiking_chart_layout(week_starts, "Overall progress"), **legend_layout},
+    )
+    factor_traces = []
+    for name, key, index, color, color_rgb in (
+        ("Weight", "weight_pct", 0, "#755d8a", "117,93,138"),
+        ("Distance / time", "distance_pct", 1, "#1b6c68", "27,108,104"),
+    ):
+        factor_fast, factor_slow = path_values(index)
+        factor_traces += hiking_band_traces(x, factor_fast, factor_slow, color_rgb, f"{name} optimal range")
+        factor_traces.append({
+            "type": "scatter", "mode": "lines+markers", "name": name, "x": x,
+            "y": [round(hike[key], 1) if hike else None for hike in best],
+            "customdata": customdata,
+            "line": {"color": color, "width": 2}, "marker": {"color": color, "size": 8},
+            "connectgaps": False,
+            "hovertemplate": (
+                f"Week of %{{customdata[0]}}<br>{name}: %{{y:.0f}}%<br>"
+                f"{hover_hike}<extra></extra>"
+            ),
+        })
+    factors = chart_config(
+        factor_traces, {**hiking_chart_layout(week_starts, "% of goal"), **legend_layout}
+    )
+
+    load_notes = []
+    previous_hike = None
+    for index, week in enumerate(weeks):
+        notes = []
+        previous_load = weeks[index - 1]["load"] if index else 0
+        if previous_load and week["load"] > previous_load * HIKING_LOAD_JUMP:
+            notes.append(f"Load up {round((week['load'] / previous_load - 1) * 100)}% on last week")
+        hike = week["best"]
+        if hike and previous_hike and (
+            hike["weight_pct"] > previous_hike["weight_pct"] + 0.5
+            and hike["distance_pct"] > previous_hike["distance_pct"] + 0.5
+        ):
+            notes.append("Weight and distance both up on the last hike")
+        if hike:
+            previous_hike = hike
+        load_notes.append(notes)
+    load = chart_config(
+        [{
+            "type": "bar", "x": x,
+            "y": [round(week["load"], 1) for week in weeks],
+            "customdata": [
+                [week_start.strftime("%d %b"), week["count"], "; ".join(notes) or "No flags"]
+                for week_start, week, notes in zip(week_starts, weeks, load_notes)
+            ],
+            "marker": {"color": ["#c8872d" if notes else "#755d8a" for notes in load_notes]},
+            "hovertemplate": (
+                "Week of %{customdata[0]}<br>Load: %{y:.1f} km × kg<br>"
+                "Rucks: %{customdata[1]}<br>%{customdata[2]}<extra></extra>"
+            ),
+        }],
+        {**hiking_chart_layout(week_starts, "km × kg", percent=False),
+         **({"yaxis": {**hiking_chart_layout(week_starts, "km × kg", percent=False)["yaxis"], "range": [0, 1]}}
+            if not any(week["load"] for week in weeks) else {})},
+    )
+
+    def chart(suffix, config, label):
+        return (
+            f'<div class="plotly-hiking-fitness-chart" id="hiking-fitness-{suffix}-{html.escape(account_name)}" '
+            f'data-plotly-config="{html.escape(json.dumps(config, separators=(",", ":")))}" '
+            f'role="img" aria-label="{label}"></div>'
+        )
+
+    return (
+        '<article class="summary-card run-scatter-card hiking-fitness-card">'
+        "<h3>Hiking Fitness</h3>"
+        f'<p class="goal-message">Goal: {HIKING_GOAL_KM} km or {HIKING_GOAL_HOURS} h carrying {HIKING_GOAL_WEIGHT_KG} kg. '
+        "Each week is scored on its best rucking hike (weeks start Monday). "
+        "Weight % is kg ÷ 15; distance % is the higher of km ÷ 20 or hours ÷ 4.</p>"
+        '<h4 class="hiking-chart-title">Overall progress</h4>'
+        + chart("overall", overall, "Weekly overall rucking progress towards goal, with the optimal progression range")
+        + '<p class="goal-message">Average of weight % and distance %. The shaded area is where you should be '
+        f"if you step up one factor every 1–2 weeks (alternating weight +{HIKING_WEIGHT_STEP_KG} kg and distance "
+        f"+{round((HIKING_DISTANCE_STEP - 1) * 100)}%), holding every {HIKING_HOLD_WEEK_EVERY}th week, starting from your first hike.</p>"
+        '<h4 class="hiking-chart-title">Weight and distance</h4>'
+        + chart("factors", factors, "Weekly rucking weight and distance progress with optimal ranges")
+        + '<h4 class="hiking-chart-title">Weekly load</h4>'
+        + chart("load", load, "Weekly rucking load, kilometres multiplied by kilograms")
+        + f'<p class="goal-message">Total km × kg for the week. Orange bars flag a rise of more than '
+        f"{round((HIKING_LOAD_JUMP - 1) * 100)}% on the previous week, or a hike where weight and distance both "
+        "rose together.</p>"
+        "</article>"
+    )
+
+
 def run_scatter_markup(rows, today):
     points = []
     start_date = today - timedelta(days=89)
@@ -1324,6 +1589,16 @@ def pace_by_hr_markup(
     )
 
 
+def collapsible_card_markup(card_html, label):
+    label = html.escape(label)
+    return (
+        '<div class="card-toggle-row">'
+        f'<button type="button" class="card-toggle" data-card-toggle data-label="{label}" '
+        f'aria-expanded="false">Show {label}</button></div>'
+        + card_html.replace("<article ", "<article hidden ", 1)
+    )
+
+
 def zone_legend_markup(zone_settings):
     settings = next(
         (
@@ -2147,6 +2422,8 @@ def fetch_rows(connection):
                             0
                         ),
                         'average_heart_rate', average_heart_rate,
+                        'average_speed', average_speed,
+                        'ruck_weight_kg', (source_json->>'beginPackWeight')::float / 1000,
                         'hr_zone_seconds', COALESCE(hr_zone_seconds, '{}'::jsonb),
                         'pace_by_hr_bucket', COALESCE(pace_by_hr_bucket, '{}'::jsonb)
                     ) ORDER BY start_time
@@ -2163,6 +2440,32 @@ def fetch_rows(connection):
         return cursor.fetchall()
 
 
+def ruck_pace_seconds_per_km(activity):
+    average_speed = float(activity.get("average_speed") or 0)
+    if average_speed > 0:
+        return 1000 / average_speed
+    distance = float(activity.get("distance_meters") or 0)
+    duration = float(activity.get("duration_seconds") or 0)
+    return duration / (distance / 1000) if distance > 0 and duration > 0 else None
+
+
+def format_ruck_weight(weight_kg):
+    if not weight_kg:
+        return None
+    return f"{float(weight_kg):.1f}".rstrip("0").rstrip(".") + " kg"
+
+
+def ruck_details_markup(activity):
+    distance = format_distance(activity.get("distance_meters", 0))
+    duration = format_run_duration(activity.get("duration_seconds", 0))
+    pace = format_pace(ruck_pace_seconds_per_km(activity))
+    weight = format_ruck_weight(activity.get("ruck_weight_kg")) or "weight n/a"
+    return (
+        f"<small>{distance} km · {duration}</small>"
+        f"<small>{pace} · {weight}</small>"
+    )
+
+
 def activity_markup(activities):
     if not activities:
         return "<span class=\"empty-day\">-</span>"
@@ -2173,8 +2476,17 @@ def activity_markup(activities):
         duration = format_run_duration(activity.get("duration_seconds", 0))
         sport = str(activity.get("sport", "")).lower()
         is_strength = sport in {"strength", "strength_training"}
-        activity_class = "activity activity-strength" if is_strength else "activity activity-running"
-        details = "" if sport in {"strength", "strength_training"} else f"<small>{distance} km · {duration}</small>"
+        is_rucking = sport == "rucking"
+        activity_class = (
+            "activity activity-strength" if is_strength
+            else "activity activity-rucking" if is_rucking
+            else "activity activity-running"
+        )
+        details = (
+            "" if is_strength
+            else ruck_details_markup(activity) if is_rucking
+            else f"<small>{distance} km · {duration}</small>"
+        )
         strength_icon = ""
         zone_bar = ""
         if sport == "running":
@@ -2211,11 +2523,14 @@ def week_calendar(rows, start_date, end_date):
     day_cards = []
     running_activity_count = 0
     strength_activity_count = 0
+    ruck_count = 0
+    ruck_distance = 0.0
+    ruck_seconds = 0.0
     for day in days:
         row = row_by_date.get(day)
         activities = [
             activity for activity in (row[6] if row else [])
-            if str(activity.get("sport", "")).lower() in {"running", "strength", "strength_training"}
+            if str(activity.get("sport", "")).lower() in {"running", "rucking", "strength", "strength_training"}
         ]
         running_activity_count += sum(
             1 for activity in activities
@@ -2225,14 +2540,25 @@ def week_calendar(rows, start_date, end_date):
             1 for activity in activities
             if str(activity.get("sport", "")).lower() in {"strength", "strength_training"}
         )
+        for activity in activities:
+            if str(activity.get("sport", "")).lower() == "rucking":
+                ruck_count += 1
+                ruck_distance += float(activity.get("distance_meters") or 0)
+                ruck_seconds += float(activity.get("duration_seconds") or 0)
         day_cards.append(
             f"<article class=\"calendar-day\"><h4>{html.escape(day.strftime('%a'))}<br>{html.escape(day.strftime('%d %b'))}</h4>"
             f"<div class=\"calendar-activities\">{activity_markup(activities)}</div></article>"
         )
+    ruck_summary = f" · {ruck_count} ruck{'s' if ruck_count != 1 else ''}" if ruck_count else ""
+    ruck_total = (
+        f"<small>Ruck: {format_distance(ruck_distance)} km · {format_run_duration(ruck_seconds)}</small>"
+        if ruck_count else ""
+    )
     week_total = (
-        f"<strong>{running_activity_count} runs · {strength_activity_count} strength</strong>"
+        f"<strong>{running_activity_count} runs · {strength_activity_count} strength{ruck_summary}</strong>"
         f"<small>Run distance: {format_distance(totals['run_distance'])} km</small>"
         f"<small>Run time: {format_run_duration(totals['run_time'])}</small>"
+        f"{ruck_total}"
         f"<small>Total distance: {format_distance(totals['total_distance'])} km</small>"
         # f"<small>Sedentary: {format_duration(totals['sedentary'])}</small>"
     )
@@ -2274,22 +2600,31 @@ def _render_single_user(
         )
     summary_cards.extend(goal_cards_markup(rows, today, account_name))
     summary_cards.append(recent_intensity_markup(rows, today))
-    if account_name != "chips":
-        summary_cards.append(recent_cycling_markup(rows, today))
-    summary_cards.append(daily_distance_markup(rows, today, account_name))
+    # Recent cycling / eBiking card hidden
+    # if account_name != "chips":
+    #     summary_cards.append(recent_cycling_markup(rows, today))
+    # summary_cards.append(daily_distance_markup(rows, today, account_name))  # Korea Walking Fun card hidden
     summary_cards.append(run_scatter_markup(rows, today))
+    summary_cards.append(hiking_fitness_markup(rows, account_name))
     if annual_points is None:
-        summary_cards.append(pace_by_hr_markup(rows, today, zone_settings))
+        summary_cards.append(
+            collapsible_card_markup(
+                pace_by_hr_markup(rows, today, zone_settings), "Pace vs Heart Rate"
+            )
+        )
     if lagged_annual_points is not None:
         summary_cards.append(
-            pace_by_hr_markup(
-                rows,
-                today,
-                zone_settings,
-                lagged_annual_points,
-                annual_years=(str(today.year),) if account_name == "chips" else None,
-                bucket_size=1 if account_name == "chips" and today.year == 2026 else 3,
-                title="Pace vs Heart Rate",
+            collapsible_card_markup(
+                pace_by_hr_markup(
+                    rows,
+                    today,
+                    zone_settings,
+                    lagged_annual_points,
+                    annual_years=(str(today.year),) if account_name == "chips" else None,
+                    bucket_size=1 if account_name == "chips" and today.year == 2026 else 3,
+                    title="Pace vs Heart Rate",
+                ),
+                "Pace vs Heart Rate",
             )
         )
     annual_section = (
@@ -2434,11 +2769,17 @@ def _render_single_user(
         .zone-legend-row small {{ color: var(--muted); font-size: 0.64rem; }}
         .run-scatter-card {{ grid-column: span 2; }}
         .pace-hr-card {{ grid-column: 1 / -1; }}
+        .summary-card[hidden] {{ display: none; }}
+        .card-toggle-row {{ grid-column: 1 / -1; }}
+        .card-toggle {{ background: transparent; border: 1px solid var(--ink); color: var(--ink); cursor: pointer; font: 600 0.78rem "DM Sans", sans-serif; padding: 0.5rem 0.9rem; }}
+        .card-toggle:hover, .card-toggle[aria-expanded="true"] {{ background: var(--ink); color: var(--paper); }}
         .lagged-pace-hr-card .run-scatter-shell {{ display: block; }}
         .lagged-pace-hr-card .run-scatter {{ display: block; max-width: 38rem; width: 100%; }}
         .plotly-pace-chart {{ min-height: 22rem; width: 100%; }}
         .plotly-run-scatter-chart {{ flex: 1 1 auto; min-height: 22rem; min-width: 0; width: 100%; }}
         .plotly-daily-distance-chart {{ height: 18rem; min-width: 0; width: 100%; }}
+        .plotly-hiking-fitness-chart {{ height: 16rem; min-width: 0; width: 100%; }}
+        .hiking-chart-title {{ font: 700 0.78rem "DM Sans", sans-serif; letter-spacing: 0.04em; margin: 1.2rem 0 0.3rem; text-transform: uppercase; }}
         .lagged-pace-hr-card .pace-hr-legend {{ font-size: 0.82rem; gap: 0.9rem 1.2rem; margin-top: 0.8rem; }}
         .lagged-pace-hr-card .pace-hr-legend label {{ cursor: pointer; min-height: 1.6rem; }}
         .lagged-pace-hr-card .pace-hr-legend input {{ height: 1rem; width: 1rem; }}
@@ -2517,6 +2858,7 @@ def _render_single_user(
         .calendar-activities {{ min-height: 5rem; text-align: left; }}
         .activity {{ background: #e3eee8; border-left: 3px solid var(--teal); display: block; margin: 0 0 0.4rem; padding: 0.35rem; }}
         .activity-strength {{ background: #f7e5c8; border-left-color: #c8872d; }}
+        .activity-rucking {{ background: #e6dfee; border-left-color: #755d8a; }}
         .activity strong {{ display: block; font-size: 0.78rem; overflow-wrap: anywhere; }}
         .zone-bar {{ background: var(--line); display: flex; height: 0.42rem; margin: 0.35rem 0 0.2rem; overflow: hidden; position: relative; width: 100%; }}
         .zone-segment {{ display: block; height: 100%; min-width: 1px; }}
@@ -2542,7 +2884,13 @@ def _render_single_user(
         @media (max-width: 520px) {{
             .page {{ padding-top: 1.5rem; }}
             .summary-grid {{ grid-template-columns: 1fr; }}
-            .shared-progress-grid, .pyramid-pair {{ grid-template-columns: 1fr; }}
+            .shared-progress-grid {{ gap: 1rem; grid-template-columns: 1fr; }}
+            .pyramid-pair {{ gap: 0.5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            .pyramid-card {{ column-gap: 0.25rem; padding: 0.6rem; }}
+            .pyramid-card h3 {{ font-size: 0.8rem; }}
+            .pyramid-card .strength-pyramid {{ margin: 0.4rem auto; }}
+            .pyramid-card .pyramid-segment {{ height: 0.3rem; }}
+            .pyramid-card .strength-pyramid-note {{ font-size: 0.68rem; margin-top: 0.4rem; }}
             .section-heading {{ align-items: start; flex-direction: column; gap: 0.35rem; }}
             .summary-card {{ padding: 1rem; }}
             .intensity-card {{ grid-column: auto; }}
@@ -2770,6 +3118,20 @@ def render(rows, generated_at=None, local_raw_root=None, derived_data=None):
         ))}px`;
         chartTouchTooltip.style.top = `${Math.max(8, pointRect.top - tooltipRect.height - 8)}px`;
         event.stopPropagation();
+    });
+
+    document.addEventListener('click', (event) => {
+        const toggle = event.target.closest?.('[data-card-toggle]');
+        if (!toggle) return;
+        const card = toggle.parentElement.nextElementSibling;
+        if (!card) return;
+        const show = card.hidden;
+        card.hidden = !show;
+        toggle.setAttribute('aria-expanded', show ? 'true' : 'false');
+        toggle.textContent = `${show ? 'Hide' : 'Show'} ${toggle.dataset.label}`;
+        if (show && typeof Plotly !== 'undefined') {
+            card.querySelectorAll('[data-plotly-config]').forEach((element) => Plotly.Plots.resize(element));
+        }
     });
 
     document.addEventListener('change', (event) => {
